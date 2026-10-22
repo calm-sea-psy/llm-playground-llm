@@ -1,0 +1,95 @@
+# PR 제목·본문 규칙 검사
+#   제목: type(scope): 설명 — Conventional Commits, 72자 이하, 마침표 없음
+#   본문: "변경 요약 · 변경 이유 · 테스트 방법 · 관련 이슈" 4개 섹션이 이 순서로, 각 섹션 비어 있지 않음
+#   GitHub Revert 버튼이 만든 PR 은 제목이 `Revert "…"` 이고 본문이 GitHub 기본 문장(`Reverts owner/repo#n`) 그대로일 때만 건너뛴다.
+#   본문을 고친 Revert PR 은 제목은 허용하되 본문은 4개 섹션 검사를 받는다 (제목만 바꿔 검사를 피하지 못하게)
+# 봇(Dependabot · Renovate) PR 은 건너뛴다 — 건너뛴 job 은 필수 검사에서 통과로 친다
+# 머지 차단: Settings → Rules → base 브랜치 룰 → Require status checks → "pr-lint" 추가
+
+name: PR Lint
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  pr-lint:
+    name: pr-lint
+    if: github.event.pull_request.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR title and body
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        shell: python
+        run: |
+          import os
+          import re
+          import sys
+
+          TYPES = "feat|fix|refactor|perf|docs|test|build|ci|chore|style|revert"
+          TITLE_RE = re.compile(rf"^({TYPES})(\([a-z0-9][a-z0-9._/-]*\))?!?: \S.*$")
+          REVERT_RE = re.compile(r'^Revert ".+"$')  # GitHub "Revert" 버튼이 만드는 제목
+          REVERT_BODY_RE = re.compile(r"^Reverts [\w.-]+/[\w.-]+#\d+\s*$")  # 버튼이 넣는 기본 본문
+          SECTIONS = ["변경 요약", "변경 이유", "테스트 방법", "관련 이슈"]
+          ISSUE_RE = re.compile(r"#\d+")
+          HEADING_RE = re.compile(r"^## (.+?)\s*$", re.M)
+
+          title = os.environ.get("PR_TITLE", "").strip()
+          body = (os.environ.get("PR_BODY") or "").replace("\r\n", "\n")
+          errors = []
+
+          # ---- 제목 ----
+          if REVERT_RE.match(title) and REVERT_BODY_RE.match(body.strip()):
+              # GitHub Revert 버튼이 만든 PR 그대로. 본문이 기본 문장이 아니면(사람이 고쳤으면) 아래 검사를 받는다
+              print("GitHub Revert PR (기본 본문) — 규칙 검사 생략")
+              sys.exit(0)
+
+          if not (TITLE_RE.match(title) or REVERT_RE.match(title)):
+              errors.append(
+                  f"제목 형식 오류: `type(scope): 설명` 형식이어야 합니다 "
+                  f"(type: {TYPES.replace('|', ', ')}). 현재: {title!r}"
+              )
+          if len(title) > 72:
+              errors.append(f"제목이 72자를 넘습니다 ({len(title)}자)")
+          if title.endswith("."):
+              errors.append("제목 끝에 마침표를 쓰지 않습니다")
+
+          # ---- 본문 ----
+          body = re.sub(r"<!--.*?-->", "", body, flags=re.S)  # 템플릿 주석은 무시
+          # 코드 블록 안의 "## …" 줄을 섹션 제목으로 세지 않도록 블록을 한 줄로 치환한다 (섹션이 비어 보이지 않게 자리는 남긴다)
+          body = re.sub(r"^(```|~~~).*?^\1[ \t]*$", "(code block)", body, flags=re.S | re.M)
+          headings = [re.sub(r"\s+", " ", m.group(1)).strip() for m in HEADING_RE.finditer(body)]
+          if headings != SECTIONS:
+              errors.append(f"본문 섹션은 정확히 {SECTIONS} 순서여야 합니다. 현재: {headings}")
+          else:
+              parts = HEADING_RE.split(body)  # [서문, 제목1, 내용1, 제목2, 내용2, ...]
+              if parts[0].strip():
+                  errors.append("첫 섹션(## 변경 요약) 앞에 다른 내용이 있습니다")
+              contents = {
+                  re.sub(r"\s+", " ", h).strip(): c for h, c in zip(parts[1::2], parts[2::2])
+              }
+              for name in SECTIONS:
+                  lines = [l.strip() for l in contents[name].splitlines()]
+                  lines = [l for l in lines if l and l not in ("-", "*")]
+                  if not lines:
+                      errors.append(f"'{name}' 섹션이 비어 있습니다")
+                      continue
+                  if name == "관련 이슈":
+                      for l in lines:
+                          if not (ISSUE_RE.search(l) or "없음" in l):
+                              errors.append(
+                                  f"'관련 이슈' 섹션의 각 줄은 `#번호` 또는 `없음`이어야 합니다. 문제 줄: {l!r}"
+                              )
+
+          if errors:
+              print("::group::PR 규칙 위반")
+              for e in errors:
+                  print(f"::error::{e}")
+              print("::endgroup::")
+              sys.exit(1)
+          print("PR 제목·본문 규칙 통과")
