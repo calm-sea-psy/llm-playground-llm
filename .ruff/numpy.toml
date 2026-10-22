@@ -1,0 +1,36 @@
+# numpy / 수치 계산 프로젝트용 ruff 설정. base.toml 위에 얹는다.
+#
+# FastAPI 와 numpy 를 같이 쓰는 프로젝트는 fastapi.toml 을 extend 하고, 프로젝트 ruff.toml 에서
+# NPY 를 켜고 아래 파일명 예외를 옮겨 적는다 (ruff 의 extend 는 하나만 가리킬 수 있다).
+#
+# 추가되는 것:
+#   NPY ...... numpy 레거시 API (np.float, np.random.* 전역 시드, 2.0 에서 제거된 함수)
+#   N803/N806 · PLR2004 해제 (수치 모듈 한정) ... 논문 표기 변수명(X, W, K)과 계산식 안 숫자 리터럴 허용.
+#              구글 3.16.5 와 같음. 공개 API 시그니처는 여전히 snake_case, 기준값 · 임계값은 상수 + 주석.
+#              파일명으로 식별되는 것만 여기에, 디렉터리(compute/, models/, notebooks/)는 프로젝트 ruff.toml 에서.
+#   PD ....... pandas 를 쓰면 주석을 풀어 켠다.
+
+extend = "base.toml"
+
+[lint]
+extend-select = [
+    "NPY",
+    # "PD",   # pandas 사용 시 해제
+]
+
+[lint.extend-per-file-ignores]
+# ---- 수치 모듈 (파일명으로 식별) ----
+# 디렉터리 패턴(compute/**, models/**, notebooks/**)은 extend 된 파일에서 동작하지 않는다 → 프로젝트 ruff.toml
+"metrics.py"  = ["N803", "N806", "PLR2004"]
+"*_kernel.py" = ["N803", "N806", "PLR2004"]
+"*_ops.py"    = ["N803", "N806", "PLR2004"]
+
+[lint.pep8-naming]
+# 수치 모듈 밖에서는 base 의 N 규칙이 그대로 적용된다.
+# 수학 기호 변수를 쓸 때는 함수 docstring 이나 주석에 출처(논문/수식)를 적는다.
+ignore-names = []
+
+[lint.pylint]
+# 계산 함수는 인자가 많아지기 쉽다. base 의 max-positional-args=6 을 유지하되,
+# 넘으면 입력을 @dataclass(frozen=True) 로 묶는 쪽을 먼저 고려한다.
+max-positional-args = 6

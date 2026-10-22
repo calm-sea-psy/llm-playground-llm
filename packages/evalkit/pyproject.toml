@@ -1,0 +1,13 @@
+[project]
+name = "playground-evalkit"
+version = "0.0.0"
+description = "평가 지표 · KorQuAD 로더와 정답 매칭 · 결과 기록 — llm-playground 공통 모듈 (의존 없음)"
+authors = [
+    { name = "yunpilsoo", email = "305675348+calm-sea-psy@users.noreply.github.com" }
+]
+requires-python = ">=3.13"
+dependencies = []
+
+[build-system]
+requires = ["uv_build>=0.11.32,<0.12.0"]
+build-backend = "uv_build"

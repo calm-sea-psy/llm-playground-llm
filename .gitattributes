@@ -1,0 +1,3 @@
+# 텍스트 파일은 체크아웃 환경(core.autocrlf)과 상관없이 LF 로 둔다.
+# ruff 설정이 line-ending = "lf" 라 CRLF 로 풀리면 format 검사가 실패하고, CRLF 셸 스크립트는 bash 가 실행하지 못한다.
+* text=auto eol=lf

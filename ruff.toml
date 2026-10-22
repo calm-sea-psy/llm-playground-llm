@@ -1,0 +1,13 @@
+# 프로젝트 ruff 설정. 공유 설정(base)을 extend 한다.
+# target-version 은 pyproject.toml 의 requires-python 에서 읽는다.
+
+# .ruff/ 는 공유 설정 복사본이다. 직접 고치지 않고, 이 레포 고유 규칙은 이 파일에 둔다.
+extend = ".ruff/base.toml"
+
+[lint.isort]
+known-first-party = ["playground_evalkit", "playground_llm"]
+
+[lint.extend-per-file-ignores]
+# 디렉터리 패턴은 이 파일(프로젝트 루트) 기준.
+"tests/**/*.py" = ["S101", "D", "ANN", "PLR2004", "S106", "S105"]
+"bench/**/*.py" = ["T20", "D", "PLC0415"]

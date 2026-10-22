@@ -1,0 +1,165 @@
+# python-conventions ruff v1
+# 공통 ruff 설정 (모든 Python 프로젝트). 프로젝트 루트의 ruff.toml 이 이 파일을 extend 한다.
+# FastAPI/LangGraph 프로젝트는 fastapi.toml, 수치 계산 프로젝트는 numpy.toml 을 대신 extend 한다 (둘 다 이 파일 위에 얹는다).
+# 프로젝트마다 다른 값(known-first-party, 디렉터리 per-file-ignores, line-length)은 프로젝트 ruff.toml 에서 덮어쓴다.
+#
+# target-version 은 여기 두지 않는다. 적으면 프로젝트 pyproject.toml 의 requires-python 을 무시하고
+# 그 버전 문법으로 --fix 해 버린다 (예: 3.11 프로젝트에 3.12 전용 `class Box[T]` 를 넣음).
+# 비워 두면 ruff 가 requires-python 을 읽는다. pyproject.toml 이 없는 프로젝트만 자기 ruff.toml 에 적는다.
+#
+# ★ per-file-ignores 에는 파일명 패턴("conftest.py", "test_*.py")만 둔다.
+#   디렉터리가 들어간 패턴("tests/**", "**/api/**")은 extend 된 파일 안에서는 그 파일의 폴더에 고정돼
+#   프로젝트 파일과 절대 맞지 않는다 (ruff 0.16 · 0.17 에서 확인). 디렉터리 패턴은 프로젝트 루트의 ruff.toml 에 둔다.
+#
+# 코드 규칙과 ruff 규칙 대응:
+#   타입 힌트 전면 적용 ............ ANN, UP006/UP007 (내장 제네릭 · X | None), RUF013 (암묵적 Optional)
+#   Any는 외부 경계에서만 .......... ANN401 (경계 모듈은 per-file-ignores 로 해제)
+#   docstring ...................... D + google 규약. 공개 함수/클래스에 한 줄은 필수(D100~D103),
+#                                   Args/Returns 섹션은 선택. 단 Args를 쓰면 전부 써야 함(D417).
+#   예외 처리 ...................... E722 (bare except), BLE001 (except Exception), TRY
+#   assert 는 테스트에서만 .......... S101 (tests/ 는 해제)
+#   import 는 파일 맨 위 ........... I (정렬), PLC0415 (함수 안 import)
+#   print 디버깅 잔류 금지 .......... T20 (scripts/ 는 해제)
+#   logging 에 f-string 금지 ........ G004
+#   TYPE_CHECKING 블록은 예외적 ..... TC001~TC003 해제 (일반 import 로 두는 쪽을 기본으로)
+#   이름 규칙 (snake/Pascal/CAPS) ... N
+
+# ---------------------------------------------------------------------------
+# 프로젝트별로 조정하는 값
+# ---------------------------------------------------------------------------
+line-length = 100          # 확인 필요: 88(black 기본) · 100 · 120 중 선택
+src = ["src", "."]         # first-party 판정 기준 폴더
+
+extend-exclude = [
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+    "**/migrations/**",
+    "**/_generated/**",
+]
+
+# ---------------------------------------------------------------------------
+[lint]
+# ---------------------------------------------------------------------------
+select = [
+    "E", "W",      # pycodestyle
+    "F",           # pyflakes
+    "I",           # isort
+    "N",           # pep8-naming
+    "UP",          # pyupgrade (내장 제네릭, X | None 등)
+    "ANN",         # 타입 어노테이션
+    "D",           # pydocstyle
+    "B",           # bugbear (가변 기본값, 잘못된 예외 사용 등)
+    "A",           # 내장 이름 가리기
+    "C4",          # 컴프리헨션
+    "SIM",         # 단순화
+    "RET",         # return 정리
+    "PIE",
+    "PTH",         # os.path 대신 pathlib
+    "PERF",
+    "ERA",         # 주석 처리된 코드
+    "T20",         # print
+    "G",           # logging 포맷
+    "LOG",         # logging 사용
+    "S",           # bandit (S101 assert 포함)
+    "BLE",         # blind except
+    "TRY",         # 예외 처리 관용구
+    "RSE",         # raise 괄호
+    "TC",          # type-checking import
+    "TID",         # tidy imports (상대 import 금지, banned-api)
+    "PL",          # pylint
+    "RUF",         # ruff 자체 규칙 (RUF013 암묵적 Optional 등)
+]
+
+ignore = [
+    # --- 포매터와 충돌 ---
+    "E501",        # 줄 길이는 format 이 처리. 못 줄이는 줄(URL 등)은 허용
+    "W191", "E111", "E114", "E117", "D206", "D300",
+    "COM812", "ISC001",
+
+    # --- docstring: 한 줄은 필수, Args/Returns 섹션은 강제하지 않는다 ---
+    "D105",        # 매직 메서드
+    "D107",        # __init__ (클래스 docstring 으로 충분)
+    # D417 은 켜 둔다: Args 섹션이 있을 때만 "빠진 인자" 를 잡는다.
+
+    # --- 예외 메시지 ---
+    "TRY003",      # raise 에 긴 메시지 금지 — 메시지는 현장에서 쓰는 게 읽기 쉽다
+
+    # --- TYPE_CHECKING 블록은 예외적으로만 쓴다 (구글 3.19.13) ---
+    "TC001", "TC002", "TC003",
+
+    # --- 복잡도 수치는 린트로 막지 않는다 (함수가 40줄을 넘으면 쪼갤지 리뷰에서 판단) ---
+    "PLR0911", "PLR0912", "PLR0913", "PLR0915",
+
+    # --- 너무 시끄러운 것 ---
+    "S311",        # random 모듈 (암호용이 아니면 무방)
+    "PLW2901",     # 루프 변수 재할당
+    "RUF001", "RUF002", "RUF003",  # 한글 주석/문자열의 유니코드 경고
+]
+
+[lint.extend-per-file-ignores]
+# ★ 파일명 패턴만. 디렉터리 패턴(tests/, scripts/, api/ …)은 프로젝트 ruff.toml 에 둔다 — 위 머리 주석 참고.
+
+# 경계 모듈(파일명으로 식별되는 것): 외부 라이브러리 반환값을 받는 곳이라 Any 허용
+"config.py"   = ["ANN401"]
+"settings.py" = ["ANN401"]
+"schemas.py"  = ["ANN401"]
+
+# 테스트 파일 (pytest 기본 수집 규칙과 같은 이름)
+"test_*.py" = [
+    "S101",        # assert
+    "D",           # docstring
+    "ANN",         # 테스트 함수 시그니처
+    "PLR2004",     # 매직 넘버
+    "S106", "S105",  # 테스트용 더미 비밀번호
+]
+"*_test.py" = ["S101", "D", "ANN", "PLR2004", "S106", "S105"]
+"conftest.py" = ["D", "ANN"]
+
+"__init__.py" = [
+    "D104",        # 패키지 docstring
+    "F401",        # re-export
+]
+
+[lint.pydocstyle]
+convention = "google"
+ignore-decorators = ["typing.overload", "typing.override"]
+
+[lint.flake8-annotations]
+allow-star-arg-any = true     # *args: Any, **kwargs: Any 허용
+suppress-dummy-args = false   # _arg 이름이라고 어노테이션을 봐주지 않는다 (안 쓰는 인자는 del arg 로 지운다)
+suppress-none-returning = false  # -> None 도 명시한다
+
+[lint.isort]
+# known-first-party 는 프로젝트에서 덮어쓴다:
+#   [lint.isort]  known-first-party = ["my_pkg"]
+combine-as-imports = true
+force-sort-within-sections = false
+split-on-trailing-comma = true
+
+[lint.flake8-tidy-imports]
+ban-relative-imports = "all"  # 구글 2.2: 상대 import 금지, 전체 패키지 경로 사용
+
+[lint.pep8-naming]
+classmethod-decorators = ["classmethod", "pydantic.field_validator", "pydantic.model_validator"]
+
+[lint.pylint]
+# PLR0913(전체 인자 수)은 꺼져 있고 PLR0917(위치 인자 수)만 켜져 있다.
+# 위치 인자 6개 초과면 경고 → 테스트 주입용 인자는 `*,` 뒤 키워드 전용으로. 키워드 전용은 세지 않는다.
+max-positional-args = 6
+allow-magic-value-types = ["str", "bytes"]  # 문자열 리터럴은 매직 값으로 보지 않는다
+
+[lint.flake8-pytest-style]
+fixture-parentheses = false
+mark-parentheses = false
+
+# ---------------------------------------------------------------------------
+[format]
+# ---------------------------------------------------------------------------
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+docstring-code-format = true
+docstring-code-line-length = "dynamic"
+skip-magic-trailing-comma = false  # trailing comma 가 있으면 한 줄에 하나씩 (구글 3.4.1)

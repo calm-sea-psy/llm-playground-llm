@@ -1,0 +1,12 @@
+# 벤치 데이터 (로컬 전용 — 결과만 커밋)
+bench/data/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# 환경 변수
+.env

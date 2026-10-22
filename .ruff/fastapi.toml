@@ -1,0 +1,71 @@
+# FastAPI / LangGraph / pydantic 프로젝트용 ruff 설정. base.toml 위에 얹는다.
+#
+# 추가되는 것:
+#   FAST ..... FastAPI 전용 (중복 response_model, Annotated 안 쓴 Depends, 안 쓰는 path 인자)
+#   ASYNC .... async 함수 안의 blocking 호출 (open, time.sleep, requests 등)
+#   TID251 ... pydantic import 를 "경계 모듈" 밖에서 금지. pydantic 은 외부 경계에서만 쓴다는 규칙을 린트로 강제한다.
+#              파일명으로 식별되는 경계 모듈은 아래 per-file-ignores 에서, 디렉터리로 식별되는 것(api/, graph/nodes/,
+#              tests/)은 프로젝트 ruff.toml 에서 해제한다 — 디렉터리 패턴은 extend 된 파일 안에서는 동작하지 않는다.
+#   B008 ..... Depends()/Query() 같은 FastAPI 기본값 호출은 가변 기본값으로 보지 않는다.
+#   TC ....... pydantic 모델 · LangGraph 상태는 실행 중에 타입 힌트를 읽으므로
+#              TYPE_CHECKING 블록으로 옮기지 않는다 (from __future__ import annotations 도 넣지 말 것).
+
+extend = "base.toml"
+
+[lint]
+extend-select = [
+    "FAST",
+    "ASYNC",
+]
+
+[lint.flake8-tidy-imports.banned-api]
+# 경계 모듈 밖에서 pydantic 을 쓰면 TID251. 경계 모듈은 아래 per-file-ignores 에서 해제한다.
+"pydantic".msg = "pydantic 은 경계 모듈(요청/응답 스키마, 설정 로더, LLM 출력 파서)에서만 쓴다. 내부는 @dataclass(frozen=True)."
+"pydantic_settings".msg = "설정은 config.py 의 from_env() 안에서 검증하고 dataclass 로 바꿔 내보낸다."
+
+[lint.extend-per-file-ignores]
+# ---- 경계 모듈 (파일명만으로 경계라고 확정할 수 있는 것): pydantic 허용 + Any 허용 ----
+# 여기 패턴은 폴더와 상관없이 그 이름이면 전부 맞는다. 그래서 어디 있어도 경계인 이름만 둔다.
+# state.py · parsers.py · deps.py 처럼 내부 모듈 이름과 겹칠 수 있는 것, 디렉터리로 식별되는 것
+# (api/**, schemas/**, graph/nodes/**, tests/**)은 프로젝트 ruff.toml 에서 폴더까지 적어 해제한다.
+"schemas.py"  = ["TID251", "ANN401"]  # 요청/응답 · LLM 출력 스키마
+"config.py"   = ["TID251", "ANN401"]  # BaseSettings → dataclass 변환
+"settings.py" = ["TID251", "ANN401"]
+"main.py"     = ["TID251"]            # 앱 조립
+"test_*.py"   = ["TID251"]
+"*_test.py"   = ["TID251"]
+"conftest.py" = ["TID251"]
+
+[lint.flake8-bugbear]
+# 기본 인자 자리의 함수 호출을 허용하는 목록 (B008)
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Body",
+    "fastapi.Header",
+    "fastapi.Cookie",
+    "fastapi.Form",
+    "fastapi.File",
+    "fastapi.Security",
+    "fastapi.params.Depends",
+    "pydantic.Field",
+]
+
+[lint.flake8-type-checking]
+# 이 클래스/데코레이터를 쓰는 모듈의 import 는 실행 중에 필요하므로 TYPE_CHECKING 으로 옮기지 않는다
+runtime-evaluated-base-classes = [
+    "pydantic.BaseModel",
+    "pydantic_settings.BaseSettings",
+    "sqlalchemy.orm.DeclarativeBase",
+    "typing.TypedDict",
+    "typing_extensions.TypedDict",
+]
+runtime-evaluated-decorators = [
+    "pydantic.validate_call",
+    "fastapi.FastAPI.get", "fastapi.FastAPI.post",
+    "fastapi.APIRouter.get", "fastapi.APIRouter.post",
+    "fastapi.APIRouter.put", "fastapi.APIRouter.delete",
+    "fastapi.APIRouter.websocket",
+]
+strict = false
