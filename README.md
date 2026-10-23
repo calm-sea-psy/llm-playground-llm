@@ -5,7 +5,7 @@ llm-playground 프로젝트들이 함께 쓰는 LLM · 평가 모듈입니다. u
 | 패키지 | 내용 | 상태 |
 |---|---|---|
 | `playground_evalkit` (`packages/evalkit`) | 검색 · 생성 지표, KorQuAD 로더와 정답 매칭, 결과 기록 · 리포트. **의존 없음** | 사용 중 |
-| `playground_llm` (`packages/llm`) | LLM 클라이언트 · 프롬프트 | 예정 |
+| `playground_llm` (`packages/llm`) | LLM 호출 계약(`LLM` Protocol) · 타입(`ModelSpec` · `Message` · `Usage` · `Generation`) · 예외 · 테스트용 `FakeLLM`. 서버 클라이언트 · 프롬프트는 다음 단계 | 골격 |
 
 ## 설치
 
@@ -30,7 +30,7 @@ uv run ruff check
 
 ```
 packages/evalkit/   playground_evalkit
-packages/llm/       playground_llm (예정)
+packages/llm/       playground_llm
 tests/              패키지별 테스트 (tests/evalkit/ …)
 bench/              모델 벤치 (bench/data/ 는 git 제외)
 reports/            벤치 결과 — 집계 지표만 커밋

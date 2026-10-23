@@ -6,6 +6,7 @@ requires-python = ">=3.13"
 members = [
     "llm-playground-llm",
     "playground-evalkit",
+    "playground-llm",
 ]
 
 [[package]]
@@ -32,6 +33,7 @@ version = "0.0.0"
 source = { virtual = "." }
 dependencies = [
     { name = "playground-evalkit" },
+    { name = "playground-llm" },
 ]
 
 [package.dev-dependencies]
@@ -41,7 +43,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "playground-evalkit", editable = "packages/evalkit" }]
+requires-dist = [
+    { name = "playground-evalkit", editable = "packages/evalkit" },
+    { name = "playground-llm", editable = "packages/llm" },
+]
 
 [package.metadata.requires-dev]
 dev = [
@@ -62,6 +67,11 @@ wheels = [
 name = "playground-evalkit"
 version = "0.1.0"
 source = { editable = "packages/evalkit" }
+
+[[package]]
+name = "playground-llm"
+version = "0.0.0"
+source = { editable = "packages/llm" }
 
 [[package]]
 name = "pluggy"
