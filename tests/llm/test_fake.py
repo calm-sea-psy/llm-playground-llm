@@ -2,7 +2,7 @@ from collections.abc import Sequence
 
 import pytest
 
-from playground_llm import LLM, FakeLLM, Message, ModelSpec
+from playground_llm import LLM, FakeLLM, Generation, Message, ModelSpec, StreamDelta
 
 SPEC = ModelSpec("fake", "m")
 QUESTION = [Message("system", "위키 근거로만 답한다"), Message("user", "조선의 수도는?")]
@@ -57,3 +57,19 @@ def test_fake_rejects_empty_inputs():
         FakeLLM([])
     with pytest.raises(ValueError, match="messages"):
         FakeLLM(["답"]).generate(SPEC, [])
+
+
+def test_fake_stream_sends_thinking_then_text_pieces_then_generation():
+    llm = FakeLLM(["서울 입니다"])
+
+    events = list(llm.stream(SPEC.with_params(think=True), QUESTION))
+
+    deltas = [e for e in events[:-1] if isinstance(e, StreamDelta)]
+    final = events[-1]
+    assert isinstance(final, Generation)
+    assert "".join(d.text for d in deltas if d.kind == "thinking") == FakeLLM.THINKING
+    assert "".join(d.text for d in deltas if d.kind == "text") == "서울 입니다"
+    assert [d.kind for d in deltas] == sorted(
+        (d.kind for d in deltas), key=lambda kind: kind != "thinking"
+    )
+    assert len(llm.calls) == 1

@@ -53,7 +53,7 @@ class ModelSpec:
 
     @property
     def think(self) -> bool:
-        """Thinking 을 켠 설정인지. params 에 없으면 꺼진 것으로 본다."""
+        """이 설정이 thinking 을 켜는지. params 에 없으면 꺼진 것으로 본다."""
         return bool(self.params.get(THINK, False))
 
     def with_params(self, **params: ParamValue) -> Self:
@@ -84,6 +84,8 @@ class Usage:
     """클라이언트가 잰 전체 시간 — 항상 있다."""
     thinking_tokens: int | None = None
     """completion_tokens 중 thinking 몫. 서버가 따로 줄 때만 (Ollama 는 주지 않는다)."""
+    cached_prompt_tokens: int | None = None
+    """prompt_tokens 중 캐시로 건너뛴 몫 (Ollama prompt_eval_cached_count). prefix 캐시 효과 측정용."""
     load_ms: int | None = None
     """모델 적재 시간. 아래 둘과 함께 Ollama 만 준다 (나노초 → ms). vLLM · OpenAI 호환은 None."""
     prompt_eval_ms: int | None = None
@@ -106,6 +108,14 @@ class Generation:
     def as_message(self) -> Message:
         """히스토리에 넣을 assistant 턴 (thinking 제외)."""
         return Message("assistant", self.text)
+
+
+@dataclass(frozen=True)
+class StreamDelta:
+    """스트리밍 중 새로 온 조각. thinking 조각과 답 조각을 구분한다."""
+
+    kind: Literal["thinking", "text"]
+    text: str
 
 
 def _format(value: ParamValue) -> str:

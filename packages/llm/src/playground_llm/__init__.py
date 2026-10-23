@@ -1,4 +1,7 @@
-"""LLM 호출 계약 · 타입 · 예외 · 테스트용 FakeLLM. 서버 클라이언트(OllamaLLM)와 프롬프트는 다음 단계."""
+"""LLM 호출 계약 · 타입 · 예외 · 테스트용 FakeLLM.
+
+서버 클라이언트는 extras 모듈에서 가져온다: `from playground_llm.ollama import OllamaLLM` (`[ollama]`).
+"""
 
 from playground_llm.errors import (
     GenerationError,
@@ -16,6 +19,7 @@ from playground_llm.types import (
     ModelSpec,
     ParamValue,
     Role,
+    StreamDelta,
     Usage,
 )
 
@@ -34,5 +38,6 @@ __all__ = [
     "ModelSpec",
     "ParamValue",
     "Role",
+    "StreamDelta",
     "Usage",
 ]
