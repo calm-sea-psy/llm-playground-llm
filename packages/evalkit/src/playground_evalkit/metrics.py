@@ -1,4 +1,4 @@
-"""검색 지표. 입력은 질의마다 순위대로 늘어놓은 정답 여부(bool) 목록이다."""
+"""검색 지표 (입력은 질의마다 순위대로 늘어놓은 정답 여부 목록) 와 지연 백분위수."""
 
 from collections.abc import Sequence
 
@@ -22,3 +22,20 @@ def mrr(ranked_relevance: Sequence[Sequence[bool]]) -> float:
     if not ranked_relevance:
         return 0.0
     return sum(reciprocal_rank(row) for row in ranked_relevance) / len(ranked_relevance)
+
+
+def percentile(values: Sequence[float], q: float) -> float:
+    """Q 백분위수 (0~100). 정렬한 값 사이를 선형 보간한다 (numpy.percentile 기본값과 같다).
+
+    Raises:
+      ValueError: values 가 비었거나 q 가 0~100 밖일 때.
+    """
+    if not values:
+        raise ValueError("values must not be empty")
+    if not 0 <= q <= 100:  # noqa: PLR2004  # 백분위 범위
+        raise ValueError(f"q must be in [0, 100], got {q=}")
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * q / 100
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
