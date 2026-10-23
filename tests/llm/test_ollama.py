@@ -148,9 +148,9 @@ def test_config_from_env_accepts_host_without_scheme(monkeypatch: pytest.MonkeyP
     assert OllamaConfig.from_env() == OllamaConfig(url="http://127.0.0.1:11434", timeout_sec=30.0)
 
 
-def test_package_root_does_not_import_httpx():
-    # 타입만 쓰는 쪽(평가 · 제품 타입)은 [ollama] extras 없이 import 할 수 있어야 한다
-    code = "import sys, playground_llm; print('httpx' in sys.modules)"
+def test_package_root_does_not_import_extras():
+    # 타입 · 프롬프트만 쓰는 쪽은 [ollama] · [json] extras 없이 import 할 수 있어야 한다
+    code = "import sys, playground_llm; print('httpx' in sys.modules or 'pydantic' in sys.modules)"
     result = subprocess.run(  # noqa: S603  # 고정 인자로 현재 인터프리터 실행
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     )
@@ -188,3 +188,12 @@ def test_live_think_off_returns_no_thinking(live: OllamaLLM):
     assert final.thinking  # 켜면 thinking 이 따로 온다
     assert "391" in final.text
     assert final.usage.completion_tokens > off.usage.completion_tokens
+
+
+def test_request_sends_json_schema_as_format():
+    schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
+
+    request = chat_request(SPEC, MESSAGES, stream=False, json_schema=schema)
+
+    assert request["format"] == schema
+    assert "format" not in chat_request(SPEC, MESSAGES, stream=False)

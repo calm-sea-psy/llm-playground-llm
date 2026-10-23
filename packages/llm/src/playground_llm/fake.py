@@ -1,7 +1,7 @@
 """테스트용 LLM. 서버 없이 정해 둔 답을 돌려주고 받은 호출을 기록한다."""
 
 import re
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
 from playground_llm.types import Generation, Message, ModelSpec, StreamDelta, Usage
@@ -16,6 +16,7 @@ class FakeCall:
 
     spec: ModelSpec
     messages: tuple[Message, ...]
+    json_schema: Mapping[str, object] | None = None
 
 
 class FakeLLM:
@@ -38,12 +39,18 @@ class FakeLLM:
         self._replies = list(replies)
         self.calls: list[FakeCall] = []
 
-    def generate(self, spec: ModelSpec, messages: Sequence[Message]) -> Generation:
-        """다음 답을 돌려주고 호출을 calls 에 남긴다."""
+    def generate(
+        self,
+        spec: ModelSpec,
+        messages: Sequence[Message],
+        *,
+        json_schema: Mapping[str, object] | None = None,
+    ) -> Generation:
+        """다음 답을 돌려주고 호출을 calls 에 남긴다. json_schema 는 기록만 한다 (지키지 않는다)."""
         if not messages:
             raise ValueError("messages must not be empty")
         reply = self._replies[min(len(self.calls), len(self._replies) - 1)]
-        self.calls.append(FakeCall(spec=spec, messages=tuple(messages)))
+        self.calls.append(FakeCall(spec=spec, messages=tuple(messages), json_schema=json_schema))
         text = reply(spec, messages) if callable(reply) else reply
         thinking = self.THINKING if spec.think else None
         completion = len(text.split()) + (len(thinking.split()) if thinking else 0)
@@ -57,7 +64,7 @@ class FakeLLM:
     def stream(
         self, spec: ModelSpec, messages: Sequence[Message]
     ) -> Iterator[StreamDelta | Generation]:
-        """Generate 결과를 단어 단위 조각으로 나눠 보낸 뒤 Generation 을 보낸다 (thinking 조각이 먼저)."""
+        """생성 결과를 단어 단위 조각으로 나눠 보낸 뒤 Generation 을 보낸다 (thinking 조각이 먼저)."""
         generation = self.generate(spec, messages)
         if generation.thinking:
             for word in _pieces(generation.thinking):

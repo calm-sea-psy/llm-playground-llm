@@ -86,8 +86,14 @@ class OllamaLLM:
         """연결을 닫는다."""
         self._client.close()
 
-    def generate(self, spec: ModelSpec, messages: Sequence[Message]) -> Generation:
-        """Messages 에 이어질 답을 한 번에 받는다.
+    def generate(
+        self,
+        spec: ModelSpec,
+        messages: Sequence[Message],
+        *,
+        json_schema: Mapping[str, object] | None = None,
+    ) -> Generation:
+        """대화에 이어질 답을 한 번에 받는다. json_schema 가 있으면 Ollama `format` 으로 넘긴다.
 
         Raises:
           ModelNotFoundError: 서버에 spec.name 모델이 없을 때.
@@ -96,9 +102,8 @@ class OllamaLLM:
         """
         start = time.perf_counter()
         with _errors(spec):
-            response = self._client.post(
-                "/api/chat", json=chat_request(spec, messages, stream=False)
-            )
+            request = chat_request(spec, messages, stream=False, json_schema=json_schema)
+            response = self._client.post("/api/chat", json=request)
             _raise_for_status(response, spec)
             body = response.json()
         message = body.get("message") or {}
@@ -153,7 +158,11 @@ class OllamaLLM:
 
 
 def chat_request(
-    spec: ModelSpec, messages: Sequence[Message], *, stream: bool
+    spec: ModelSpec,
+    messages: Sequence[Message],
+    *,
+    stream: bool,
+    json_schema: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """/api/chat 요청 본문. params 를 options · 최상위로 나누고 think 를 늘 넣는다."""
     if not messages:
@@ -171,6 +180,7 @@ def chat_request(
         "stream": stream,
         THINK: spec.think,
         **({"options": options} if options else {}),
+        **({"format": dict(json_schema)} if json_schema is not None else {}),
         **top,
     }
 
@@ -213,7 +223,7 @@ def _raise_for_status(response: httpx.Response, spec: ModelSpec) -> None:
 
 @contextmanager
 def _errors(spec: ModelSpec) -> Iterator[None]:
-    """Httpx 예외를 playground_llm 예외로 바꾼다."""
+    """HTTP 클라이언트(httpx) 예외를 playground_llm 예외로 바꾼다."""
     try:
         yield
     except httpx.TimeoutException as e:
