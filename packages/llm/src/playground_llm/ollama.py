@@ -24,6 +24,7 @@ from playground_llm.types import (
     ModelSpec,
     ParamValue,
     StreamDelta,
+    Think,
     Usage,
 )
 
@@ -33,6 +34,16 @@ TIMEOUT_SEC = 120.0  # think on 은 thinking 토큰이 수천 개까지 간다. 
 TOP_LEVEL_PARAMS = frozenset({"keep_alive"})
 # 서버와 상관없는 이름 → Ollama options 이름 (프로필 표가 같은 이름을 쓰게)
 OPTION_ALIASES = {"max_tokens": "num_predict"}
+# Think → /api/chat 의 think 값. Ollama 는 한 필드에 false · true · "low" · "medium" · "high" 를 받는다
+THINK_TO_OLLAMA: dict[Think, bool | str] = {
+    Think.OFF: False,
+    Think.ON: True,
+    Think.LOW: "low",
+    Think.MEDIUM: "medium",
+    Think.HIGH: "high",
+}
+# THINK_RULES 를 잰 서버 버전. 서버를 올리면 test_live_rule_* 로 근거를 다시 확인한다
+THINK_RULES_OLLAMA_VERSION = "0.40.8"
 _NS_PER_MS = 1_000_000
 
 
@@ -55,11 +66,76 @@ class OllamaConfig:
         return cls(url=url, timeout_sec=float(timeout) if timeout else default.timeout_sec)
 
 
+@dataclass(frozen=True)
+class ThinkRule:
+    """이름 앞부분이 맞는 모델이 받는 think 값."""
+
+    prefix: str
+    """모델 이름 앞부분 (`gpt-oss` 는 20b · 120b 를 함께 잡는다). 빈 문자열은 모든 모델."""
+    allowed: frozenset[Think]
+    reason: str
+    """나머지 값을 거부하는 이유. 오류 메시지에 붙는다."""
+
+
+@dataclass(frozen=True)
+class ThinkRules:
+    """모델별 think 규칙표. 첫 번째로 맞는 규칙만 쓴다 — 구체적인 규칙이 앞, 기본 규칙(prefix "")이 맨 뒤."""
+
+    rules: tuple[ThinkRule, ...]
+
+    def __post_init__(self) -> None:
+        # 앞 규칙에 가려 영영 맞지 않는 규칙이 있으면 표를 만들 때(import 시점) 실패시킨다
+        if not self.rules or self.rules[-1].prefix:
+            raise ValueError("the last think rule must be the default rule with prefix ''")
+        for i, rule in enumerate(self.rules):
+            for earlier in self.rules[:i]:
+                if rule.prefix.startswith(earlier.prefix):
+                    raise ValueError(
+                        f"think rule {rule.prefix!r} is shadowed by {earlier.prefix!r}"
+                    )
+
+    def check(self, spec: ModelSpec) -> None:
+        """spec.think 를 그 모델이 받지 않으면 ValueError. 서버에 보내기 전에 부른다."""
+        rule = next(rule for rule in self.rules if spec.name.startswith(rule.prefix))
+        if spec.think in rule.allowed:
+            return
+        allowed = ", ".join(think for think in Think if think in rule.allowed)
+        raise ValueError(
+            f"{spec.name}: think={spec.think} is not supported ({rule.reason}, "
+            f"Ollama {THINK_RULES_OLLAMA_VERSION}); use one of: {allowed}"
+        )
+
+
+# 17×23 질문 · temperature 0 으로 모델마다 think 값 다섯 개를 보내 잰 결과
+THINK_RULES = ThinkRules(
+    (
+        ThinkRule(
+            prefix="gpt-oss",
+            allowed=frozenset({Think.LOW, Think.MEDIUM, Think.HIGH}),
+            reason="false does not turn thinking off and true is the same as medium",
+        ),
+        ThinkRule(
+            prefix="gemma4:e4b",
+            allowed=frozenset({Think.OFF}),
+            reason="no thinking comes back even with true",
+        ),
+        # gemma4:12b · qwen3.5 는 정도를 무시하고 true 로 돈다 → 정도는 위에 적은 모델에만 허용.
+        # thinking 이 없는 모델(phi4-mini · ministral-3)은 ON 에 서버가 400 을 준다 → 서버에 맡긴다
+        ThinkRule(
+            prefix="",
+            allowed=frozenset({Think.OFF, Think.ON}),
+            reason="levels are ignored and treated as true",
+        ),
+    )
+)
+
+
 class OllamaLLM:
     """LLM Protocol 을 Ollama /api/chat 으로 채운다. `think` 는 항상 명시해서 보낸다.
 
     gemma4 처럼 thinking 을 지원하는 모델은 `think` 를 빼면 켜진 채로 돈다 (Ollama 0.40, gemma4:12b 확인).
-    그래서 spec 에 think 가 없으면 false 를 보낸다.
+    그래서 spec 에 think 가 없으면 false 를 보낸다. 모델이 받지 않는 think 값(THINK_RULES)은
+    서버에 보내기 전에 ValueError 로 거부한다 — 몰래 다른 값으로 바꾸면 spec_id 와 실제 동작이 어긋난다.
 
     예)
         with OllamaLLM.connect(OllamaConfig.from_env()) as llm:
@@ -164,9 +240,10 @@ def chat_request(
     stream: bool,
     json_schema: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    """/api/chat 요청 본문. params 를 options · 최상위로 나누고 think 를 늘 넣는다."""
+    """/api/chat 요청 본문. params 를 options · 최상위로 나누고 think 를 늘 넣는다 (THINK_RULES 로 먼저 확인)."""
     if not messages:
         raise ValueError("messages must not be empty")
+    THINK_RULES.check(spec)
     options: dict[str, object] = {}
     top: dict[str, object] = {}
     for key, value in spec.params.items():
@@ -178,7 +255,7 @@ def chat_request(
         "model": spec.name,
         "messages": [{"role": m.role, "content": m.content} for m in messages],
         "stream": stream,
-        THINK: spec.think,
+        THINK: THINK_TO_OLLAMA[spec.think],
         **({"options": options} if options else {}),
         **({"format": dict(json_schema)} if json_schema is not None else {}),
         **top,

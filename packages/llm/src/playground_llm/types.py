@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import StrEnum
 from types import MappingProxyType
 from typing import Literal, Self, get_args
 
@@ -14,7 +15,27 @@ Role = Literal["system", "user", "assistant"]
 ROLES: tuple[str, ...] = get_args(Role)
 
 THINK = "think"
-"""thinking 을 켜고 끄는 params 키. 켜고 끈 두 설정은 spec_id 가 달라 벤치에서 따로 잰다."""
+"""thinking 설정 params 키. 값은 Think ("low" 같은 문자열도 받아 Think 로 바꾼다).
+값이 다르면 spec_id 가 달라 벤치에서 따로 잰다."""
+
+
+class Think(StrEnum):
+    """thinking 설정. 서버로 보낼 값으로 바꾸는 건 각 클라이언트가 한다.
+
+    LOW · MEDIUM · HIGH 는 켜되 정도를 고른 것 (gpt-oss 처럼 정도만 받는 모델용).
+    모델마다 받는 값이 달라서 클라이언트가 보내기 전에 거부할 수 있다.
+    """
+
+    OFF = "off"
+    ON = "on"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+    @property
+    def enabled(self) -> bool:
+        """켜지는 값인지 (정도도 켜짐). StrEnum 은 OFF 도 참이라 `if spec.think` 로 판단하면 틀린다."""
+        return self is not Think.OFF
 
 
 @dataclass(frozen=True)
@@ -22,8 +43,8 @@ class ModelSpec:
     """모델 하나 · 생성 설정 하나. 벤치 · 평가 기록의 키 (`spec_id`).
 
     예)
-        spec = ModelSpec("ollama", "gemma4:12b", {"think": False, "temperature": 0.1})
-        spec.spec_id  # "ollama/gemma4:12b?temperature=0.1,think=false"
+        spec = ModelSpec("ollama", "gemma4:12b", {"think": Think.OFF, "temperature": 0.1})
+        spec.spec_id  # "ollama/gemma4:12b?temperature=0.1,think=off"
     """
 
     provider: str
@@ -39,8 +60,11 @@ class ModelSpec:
             raise ValueError(
                 f"provider and name must not be empty, got {self.provider=} {self.name=}"
             )
+        params = dict(self.params)
+        if THINK in params:
+            params[THINK] = _think(params[THINK])
         # 만든 쪽이 넘긴 dict 를 나중에 고쳐도 spec_id 가 바뀌지 않게 읽기 전용 복사본으로
-        object.__setattr__(self, "params", MappingProxyType(dict(self.params)))
+        object.__setattr__(self, "params", MappingProxyType(params))
 
     @property
     def spec_id(self) -> str:
@@ -52,12 +76,12 @@ class ModelSpec:
         return f"{base}?{pairs}"
 
     @property
-    def think(self) -> bool:
-        """이 설정이 thinking 을 켜는지. params 에 없으면 꺼진 것으로 본다."""
-        return bool(self.params.get(THINK, False))
+    def think(self) -> Think:
+        """이 설정의 thinking. params 에 없으면 OFF. 켜졌는지는 `spec.think.enabled` 로 본다."""
+        return Think(self.params.get(THINK, Think.OFF))
 
     def with_params(self, **params: ParamValue) -> Self:
-        """설정값 일부를 바꾼 새 설정 (예: `spec.with_params(think=True)`)."""
+        """설정값 일부를 바꾼 새 설정 (예: `spec.with_params(think=Think.ON)`)."""
         return type(self)(self.provider, self.name, {**self.params, **params})
 
 
@@ -116,6 +140,15 @@ class StreamDelta:
 
     kind: Literal["thinking", "text"]
     text: str
+
+
+def _think(value: ParamValue) -> Think:
+    # bool · 대소문자 변형은 받지 않는다 — True 와 Think.ON 처럼 한 설정이 두 표기로 기록되지 않게
+    try:
+        return Think(value)
+    except ValueError:
+        choices = [think.value for think in Think]
+        raise ValueError(f"{THINK} must be one of {choices}, got {value=}") from None
 
 
 def _format(value: ParamValue) -> str:

@@ -1,28 +1,46 @@
 import pytest
 
 from playground_evalkit import ResultRecord
-from playground_llm import THINK, Generation, Message, ModelSpec, Usage
+from playground_llm import THINK, Generation, Message, ModelSpec, ParamValue, Think, Usage
 
 SPEC = ModelSpec("ollama", "gemma4:12b", {"temperature": 0.1, "stop": ("<eos>", "\n\n")})
 
 
 def test_spec_id_sorts_params_and_formats_values():
-    spec = ModelSpec("ollama", "gemma4:12b", {"think": False, "temperature": 0.1, "num_ctx": 8192})
+    spec = ModelSpec(
+        "ollama", "gemma4:12b", {"think": Think.OFF, "temperature": 0.1, "num_ctx": 8192}
+    )
 
-    assert spec.spec_id == "ollama/gemma4:12b?num_ctx=8192,temperature=0.1,think=false"
+    assert spec.spec_id == "ollama/gemma4:12b?num_ctx=8192,temperature=0.1,think=off"
     assert SPEC.spec_id == "ollama/gemma4:12b?stop=<eos>|\n\n,temperature=0.1"
     assert ModelSpec("ollama", "gemma3:4b").spec_id == "ollama/gemma3:4b"
 
 
 def test_think_on_and_off_are_different_specs():
-    off = SPEC.with_params(think=False)
-    on = SPEC.with_params(think=True)
+    off = SPEC.with_params(think=Think.OFF)
+    on = SPEC.with_params(think=Think.ON)
 
-    assert (off.think, on.think, SPEC.think) == (False, True, False)
+    assert (off.think, on.think, SPEC.think) == (Think.OFF, Think.ON, Think.OFF)
     assert off.spec_id != on.spec_id
     assert off != on
-    assert on.params[THINK] is True
+    assert on.params[THINK] is Think.ON
     assert SPEC.params.get(THINK) is None  # 원래 spec 은 그대로
+
+
+def test_think_string_becomes_enum_and_level_counts_as_enabled():
+    low = SPEC.with_params(think="low")
+
+    assert low.params[THINK] is Think.LOW
+    assert low == SPEC.with_params(think=Think.LOW)
+    assert low.spec_id.endswith(",think=low")
+    assert [think.enabled for think in Think] == [False, True, True, True, True]
+
+
+@pytest.mark.parametrize("value", [True, False, "Low", "true", 1])
+def test_spec_rejects_think_outside_enum(value: ParamValue):
+    # bool 을 받으면 True 와 Think.ON 이 같은 설정의 두 표기로 기록된다
+    with pytest.raises(ValueError, match="think must be one of"):
+        SPEC.with_params(think=value)
 
 
 def test_spec_is_hashable_and_equal_by_value():

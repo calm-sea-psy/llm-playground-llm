@@ -23,6 +23,7 @@ from playground_llm.types import (
     ParamValue,
     Role,
     StreamDelta,
+    Think,
     Usage,
 )
 
@@ -47,6 +48,7 @@ __all__ = [
     "Role",
     "StreamDelta",
     "StructuredOutputError",
+    "Think",
     "Usage",
     "compose",
 ]

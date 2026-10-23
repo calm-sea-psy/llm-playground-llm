@@ -52,7 +52,7 @@ class FakeLLM:
         reply = self._replies[min(len(self.calls), len(self._replies) - 1)]
         self.calls.append(FakeCall(spec=spec, messages=tuple(messages), json_schema=json_schema))
         text = reply(spec, messages) if callable(reply) else reply
-        thinking = self.THINKING if spec.think else None
+        thinking = self.THINKING if spec.think.enabled else None
         completion = len(text.split()) + (len(thinking.split()) if thinking else 0)
         usage = Usage(
             prompt_tokens=sum(len(m.content.split()) for m in messages),
