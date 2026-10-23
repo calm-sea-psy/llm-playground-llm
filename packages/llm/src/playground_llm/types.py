@@ -57,7 +57,7 @@ class ModelSpec:
         return bool(self.params.get(THINK, False))
 
     def with_params(self, **params: ParamValue) -> Self:
-        """Params 일부를 바꾼 새 설정 (예: `spec.with_params(think=True)`)."""
+        """설정값 일부를 바꾼 새 설정 (예: `spec.with_params(think=True)`)."""
         return type(self)(self.provider, self.name, {**self.params, **params})
 
 

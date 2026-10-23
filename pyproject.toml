@@ -5,7 +5,7 @@
 name = "llm-playground-llm"
 version = "0.0.0"
 requires-python = ">=3.13"
-dependencies = ["playground-evalkit", "playground-llm[ollama]"]
+dependencies = ["playground-evalkit", "playground-llm[ollama,json]"]
 
 [tool.uv]
 package = false

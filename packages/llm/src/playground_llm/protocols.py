@@ -1,6 +1,6 @@
 """LLM 클라이언트 계약. 서버마다 구현체(OllamaLLM · OpenAICompatLLM · FakeLLM)를 둔다."""
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Protocol
 
 from playground_llm.types import Generation, Message, ModelSpec, StreamDelta
@@ -13,8 +13,20 @@ class LLM(Protocol):
     서버를 바꿀 때는 구현체만 바꾸고 쓰는 쪽 코드는 그대로 둔다.
     """
 
-    def generate(self, spec: ModelSpec, messages: Sequence[Message]) -> Generation:
+    def generate(
+        self,
+        spec: ModelSpec,
+        messages: Sequence[Message],
+        *,
+        json_schema: Mapping[str, object] | None = None,
+    ) -> Generation:
         """주어진 spec 설정으로 messages 에 이어질 assistant 답을 만든다.
+
+        Args:
+          spec: 모델 · 생성 설정.
+          messages: 대화. 이전 턴의 thinking 은 넣지 않는다.
+          json_schema: 있으면 답(text)을 이 JSON Schema 에 맞춰 내도록 서버에 요구한다
+            (Ollama `format`). 서버가 지키지 못할 수도 있어 검증은 쓰는 쪽(generate_json)이 한다.
 
         Raises:
           ModelNotFoundError: 서버에 spec.name 모델이 없을 때.
