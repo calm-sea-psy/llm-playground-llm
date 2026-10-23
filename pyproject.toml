@@ -1,11 +1,11 @@
 # uv workspace 루트 (패키지 아님). 패키지는 packages/ 아래:
 #   packages/evalkit → playground-evalkit (지표 · KorQuAD · 결과 기록, 의존 없음)
-#   packages/llm     → playground-llm (Phase 2)
+#   packages/llm     → playground-llm (LLM 호출 계약 · 타입 · 클라이언트 · 프롬프트)
 [project]
 name = "llm-playground-llm"
 version = "0.0.0"
 requires-python = ">=3.13"
-dependencies = ["playground-evalkit"]
+dependencies = ["playground-evalkit", "playground-llm"]
 
 [tool.uv]
 package = false
@@ -15,6 +15,7 @@ members = ["packages/*"]
 
 [tool.uv.sources]
 playground-evalkit = { workspace = true }
+playground-llm = { workspace = true }
 
 [dependency-groups]
 dev = [
