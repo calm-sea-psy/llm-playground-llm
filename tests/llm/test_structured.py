@@ -5,7 +5,7 @@ import httpx
 import pytest
 from pydantic import BaseModel, Field
 
-from playground_llm import FakeLLM, Message, ModelSpec, StructuredOutputError
+from playground_llm import FakeLLM, Message, ModelSpec, StructuredOutputError, Think
 from playground_llm.ollama import OllamaConfig, OllamaLLM
 from playground_llm.structured import generate_json
 
@@ -67,7 +67,7 @@ def test_no_retry_when_retries_is_zero():
 def test_thinking_is_kept_apart_from_parsed_text():
     llm = FakeLLM(['{"answer": "한양", "confidence": 0.9}'])
 
-    result = generate_json(llm, SPEC.with_params(think=True), QUESTION, Answer)
+    result = generate_json(llm, SPEC.with_params(think=Think.ON), QUESTION, Answer)
 
     assert result.generation.thinking == FakeLLM.THINKING
     assert result.value.answer == "한양"

@@ -2,7 +2,7 @@ from collections.abc import Sequence
 
 import pytest
 
-from playground_llm import LLM, FakeLLM, Generation, Message, ModelSpec, StreamDelta
+from playground_llm import LLM, FakeLLM, Generation, Message, ModelSpec, StreamDelta, Think
 
 SPEC = ModelSpec("fake", "m")
 QUESTION = [Message("system", "위키 근거로만 답한다"), Message("user", "조선의 수도는?")]
@@ -18,7 +18,7 @@ def test_fake_returns_replies_in_order_then_repeats_last():
 
 def test_fake_records_calls_with_spec_and_messages():
     llm = FakeLLM(["답"])
-    on = SPEC.with_params(think=True)
+    on = SPEC.with_params(think=Think.ON)
 
     llm.generate(SPEC, QUESTION)
     llm.generate(on, QUESTION[1:])
@@ -30,8 +30,8 @@ def test_fake_records_calls_with_spec_and_messages():
 def test_fake_fills_thinking_only_when_think_is_on():
     llm = FakeLLM(["서울 입니다"])
 
-    off = llm.generate(SPEC, QUESTION)
-    on = llm.generate(SPEC.with_params(think=True), QUESTION)
+    off = llm.generate(SPEC.with_params(think=Think.OFF), QUESTION)  # OFF 도 StrEnum 이라 참이다
+    on = llm.generate(SPEC.with_params(think=Think.ON), QUESTION)
 
     assert off.thinking is None
     assert on.thinking == FakeLLM.THINKING
@@ -62,7 +62,7 @@ def test_fake_rejects_empty_inputs():
 def test_fake_stream_sends_thinking_then_text_pieces_then_generation():
     llm = FakeLLM(["서울 입니다"])
 
-    events = list(llm.stream(SPEC.with_params(think=True), QUESTION))
+    events = list(llm.stream(SPEC.with_params(think=Think.ON), QUESTION))
 
     deltas = [e for e in events[:-1] if isinstance(e, StreamDelta)]
     final = events[-1]

@@ -16,8 +16,16 @@ from playground_llm import (
     ModelNotFoundError,
     ModelSpec,
     StreamDelta,
+    Think,
 )
-from playground_llm.ollama import OllamaConfig, OllamaLLM, chat_request
+from playground_llm.ollama import (
+    THINK_TO_OLLAMA,
+    OllamaConfig,
+    OllamaLLM,
+    ThinkRule,
+    ThinkRules,
+    chat_request,
+)
 
 SPEC = ModelSpec("ollama", "gemma4:12b", {"temperature": 0.1, "max_tokens": 64})
 MESSAGES = [Message("system", "짧게 답한다"), Message("user", "17 곱하기 23 은?")]
@@ -46,7 +54,7 @@ def _llm(handler) -> tuple[OllamaLLM, list[dict]]:
 def test_request_always_sends_think_and_maps_params():
     off = chat_request(SPEC, MESSAGES, stream=False)
     on = chat_request(
-        SPEC.with_params(think=True, stop=("\n\n",), keep_alive="10m"), MESSAGES, stream=True
+        SPEC.with_params(think=Think.ON, stop=("\n\n",), keep_alive="10m"), MESSAGES, stream=True
     )
 
     assert off["think"] is False  # 빼면 gemma4 는 thinking 이 켜진 채로 돈다
@@ -59,11 +67,58 @@ def test_request_always_sends_think_and_maps_params():
     assert "think" not in on["options"]
 
 
+def test_request_sends_think_level_as_string():
+    spec = ModelSpec("ollama", "gpt-oss:20b", {"think": Think.LOW})
+
+    assert chat_request(spec, MESSAGES, stream=False)["think"] == "low"
+
+
+def test_think_map_covers_every_think_value():
+    assert set(THINK_TO_OLLAMA) == set(Think)
+
+
+@pytest.mark.parametrize(
+    ("model", "think"),
+    [
+        ("gpt-oss:20b", Think.OFF),  # false 로 꺼지지 않는다
+        ("gpt-oss:120b", Think.ON),  # true 는 medium 과 같다
+        ("gemma4:e4b", Think.ON),  # true 여도 thinking 이 오지 않는다
+        ("gemma4:12b", Think.LOW),  # 정도를 무시하고 true 로 돈다 (기본 규칙)
+    ],
+)
+def test_request_rejects_think_the_model_does_not_take(model: str, think: Think):
+    spec = ModelSpec("ollama", model, {"think": think})
+
+    with pytest.raises(ValueError, match=f"think={think} is not supported"):
+        chat_request(spec, MESSAGES, stream=False)
+
+
+def test_rejection_names_allowed_values_and_sends_nothing():
+    llm, requests = _llm(lambda _: httpx.Response(200, json=FINAL))
+
+    with pytest.raises(ValueError, match="use one of: low, medium, high"):
+        llm.generate(ModelSpec("ollama", "gpt-oss:20b"), MESSAGES)  # think 를 빼면 OFF
+
+    assert requests == []
+
+
+def test_think_rules_reject_shadowed_rule_and_missing_default():
+    general = ThinkRule(prefix="gemma4", allowed=frozenset({Think.OFF}), reason="r")
+    specific = ThinkRule(prefix="gemma4:e4b", allowed=frozenset({Think.OFF}), reason="r")
+    default = ThinkRule(prefix="", allowed=frozenset({Think.OFF, Think.ON}), reason="r")
+
+    ThinkRules((specific, general, default))  # 구체적인 규칙이 앞이면 된다
+    with pytest.raises(ValueError, match="shadowed"):
+        ThinkRules((general, specific, default))
+    with pytest.raises(ValueError, match="default rule"):
+        ThinkRules((specific, general))
+
+
 def test_generate_splits_thinking_and_text_and_reads_usage():
     body = {"message": {"role": "assistant", "content": "391", "thinking": "17×23"}, **FINAL}
     llm, requests = _llm(lambda _: httpx.Response(200, json=body))
 
-    generation = llm.generate(SPEC.with_params(think=True), MESSAGES)
+    generation = llm.generate(SPEC.with_params(think=Think.ON), MESSAGES)
 
     assert (generation.text, generation.thinking) == ("391", "17×23")
     assert requests[0]["think"] is True
@@ -92,7 +147,7 @@ def test_stream_yields_thinking_then_text_then_generation():
     payload = "\n".join(json.dumps(line, ensure_ascii=False) for line in lines) + "\n"
     llm, requests = _llm(lambda _: httpx.Response(200, content=payload.encode()))
 
-    events = list(llm.stream(SPEC.with_params(think=True), MESSAGES))
+    events = list(llm.stream(SPEC.with_params(think=Think.ON), MESSAGES))
 
     deltas = [e for e in events if isinstance(e, StreamDelta)]
     assert [(d.kind, d.text) for d in deltas] == [
@@ -179,7 +234,7 @@ def test_live_think_off_returns_no_thinking(live: OllamaLLM):
     question = [Message("user", "17 곱하기 23 은? 숫자만 답해.")]
 
     off = live.generate(spec, question)
-    streamed = list(live.stream(spec.with_params(think=True), question))
+    streamed = list(live.stream(spec.with_params(think=Think.ON), question))
 
     assert off.thinking is None
     assert "391" in off.text
@@ -188,6 +243,70 @@ def test_live_think_off_returns_no_thinking(live: OllamaLLM):
     assert final.thinking  # 켜면 thinking 이 따로 온다
     assert "391" in final.text
     assert final.usage.completion_tokens > off.usage.completion_tokens
+
+
+# 아래 test_live_rule_* 는 THINK_RULES 의 근거가 지금 서버에서도 맞는지 본다.
+# 깨지면 Ollama 동작이 바뀐 것 — 규칙표와 THINK_RULES_OLLAMA_VERSION 을 다시 잰다
+RAW_QUESTION = [{"role": "user", "content": "What is 17 times 23? Answer with the number only."}]
+
+
+@pytest.fixture
+def server() -> OllamaLLM:
+    """실제 Ollama (모델은 테스트마다 확인). 떠 있지 않으면 건너뛴다."""
+    llm = OllamaLLM.connect(OllamaConfig.from_env())
+    try:
+        llm._client.get("/api/tags")
+    except httpx.HTTPError:
+        pytest.skip("Ollama 가 떠 있지 않음")
+    return llm
+
+
+def _require(server: OllamaLLM, model: str) -> None:
+    names = {m["name"] for m in server._client.get("/api/tags").json()["models"]}
+    if not {model, f"{model}:latest"} & names:  # 태그를 빼면 Ollama 는 :latest 로 받는다
+        pytest.skip(f"{model} 이 Ollama 에 없음")
+
+
+def _raw_thinking(server: OllamaLLM, model: str, think: bool | str) -> str:
+    """규칙표를 거치지 않고 think 값을 그대로 보내 받은 thinking. 없으면 빈 문자열."""
+    _require(server, model)
+    body = {
+        "model": model,
+        "messages": RAW_QUESTION,
+        "stream": False,
+        "think": think,
+        "options": {"temperature": 0, "seed": 1},
+    }
+    response = server._client.post("/api/chat", json=body)
+    response.raise_for_status()
+    return response.json()["message"].get("thinking", "")
+
+
+def test_live_rule_gpt_oss_false_still_thinks_and_true_equals_medium(server: OllamaLLM):
+    model = "gpt-oss:20b"
+
+    assert _raw_thinking(server, model, False)  # → OFF 거부
+    assert _raw_thinking(server, model, True) == _raw_thinking(server, model, "medium")  # → ON 거부
+
+
+def test_live_rule_gemma4_e4b_never_returns_thinking(server: OllamaLLM):
+    assert _raw_thinking(server, "gemma4:e4b", True) == ""  # → ON 거부
+
+
+def test_live_rule_levels_are_ignored_on_unlisted_models(server: OllamaLLM):
+    on = _raw_thinking(server, "gemma4:12b", True)
+
+    assert on
+    assert _raw_thinking(server, "gemma4:12b", "low") == on  # → 기본 규칙은 OFF · ON 만
+
+
+def test_live_server_rejects_think_on_for_model_without_thinking(server: OllamaLLM):
+    # 표에 없는 모델도 thinking 이 없으면 서버가 400 으로 막는다 → 기본 규칙이 ON 을 서버에 맡겨도 된다
+    _require(server, "phi4-mini")
+    spec = ModelSpec("ollama", "phi4-mini", {"think": Think.ON})
+
+    with pytest.raises(GenerationError, match="does not support thinking"):
+        server.generate(spec, MESSAGES)
 
 
 def test_request_sends_json_schema_as_format():
