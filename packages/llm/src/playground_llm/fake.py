@@ -1,9 +1,10 @@
 """테스트용 LLM. 서버 없이 정해 둔 답을 돌려주고 받은 호출을 기록한다."""
 
-from collections.abc import Callable, Sequence
+import re
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 
-from playground_llm.types import Generation, Message, ModelSpec, Usage
+from playground_llm.types import Generation, Message, ModelSpec, StreamDelta, Usage
 
 type Reply = str | Callable[[ModelSpec, Sequence[Message]], str]
 """고정 답, 또는 (설정, 메시지) 를 보고 답을 만드는 함수."""
@@ -52,3 +53,20 @@ class FakeLLM:
             total_ms=0,
         )
         return Generation(text=text, model=spec, usage=usage, thinking=thinking)
+
+    def stream(
+        self, spec: ModelSpec, messages: Sequence[Message]
+    ) -> Iterator[StreamDelta | Generation]:
+        """Generate 결과를 단어 단위 조각으로 나눠 보낸 뒤 Generation 을 보낸다 (thinking 조각이 먼저)."""
+        generation = self.generate(spec, messages)
+        if generation.thinking:
+            for word in _pieces(generation.thinking):
+                yield StreamDelta("thinking", word)
+        for word in _pieces(generation.text):
+            yield StreamDelta("text", word)
+        yield generation
+
+
+def _pieces(text: str) -> list[str]:
+    """이어 붙이면 원문이 되는 단어 조각 (공백은 앞 단어에 붙인다)."""
+    return re.findall(r"\S+\s*|\s+", text)

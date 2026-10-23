@@ -1,9 +1,9 @@
 """LLM 클라이언트 계약. 서버마다 구현체(OllamaLLM · OpenAICompatLLM · FakeLLM)를 둔다."""
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Protocol
 
-from playground_llm.types import Generation, Message, ModelSpec
+from playground_llm.types import Generation, Message, ModelSpec, StreamDelta
 
 
 class LLM(Protocol):
@@ -20,5 +20,15 @@ class LLM(Protocol):
           ModelNotFoundError: 서버에 spec.name 모델이 없을 때.
           GenerationTimeoutError: 시간 제한을 넘겼을 때.
           GenerationError: 그 밖에 서버가 실패했을 때.
+        """
+        ...
+
+    def stream(
+        self, spec: ModelSpec, messages: Sequence[Message]
+    ) -> Iterator[StreamDelta | Generation]:
+        """조각 단위로 받는 generate. 조각(StreamDelta)들 뒤에 마지막으로 전체 Generation 하나를 보낸다.
+
+        Raises:
+          generate 와 같다. 조각을 몇 개 보낸 뒤에도 날 수 있다.
         """
         ...
