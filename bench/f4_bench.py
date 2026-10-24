@@ -25,6 +25,7 @@ bench/data/ 는 git 제외 (KorQuAD CC BY-ND — 질문 · 문맥 · 모델 출�
 사용법:
   uv run python bench/f4_bench.py run --set f4-korquad-xxxxxxxx --run-id 2026-10-24-f4-stage1
   uv run python bench/f4_bench.py run --set f4-korquad-xxxxxxxx --set f4-extra-v1 --run-id 2026-10-24-f4-stage1
+  uv run python bench/f4_bench.py run --set ... --run-id ... --think off low   # 오래 걸리는 think on 은 따로
   uv run python bench/f4_bench.py run --set ... --run-id smoke --specs gemma4:12b --limit 5
   uv run python bench/f4_bench.py score --run-id 2026-10-24-f4-stage1
 """
@@ -112,7 +113,7 @@ class BenchAnswer(BaseModel):
 def main() -> None:
     args = _parse_args()
     if args.step == "run":
-        run(args.set, args.run_id, specs=args.specs, limit=args.limit)
+        run(args.set, args.run_id, specs=args.specs, thinks=args.think, limit=args.limit)
     else:
         score(args.run_id)
 
@@ -127,11 +128,24 @@ def _parse_args() -> argparse.Namespace:
         help="run 만: bench/data/ 아래 세트 폴더 이름 (여러 번 줄 수 있다)",
     )
     parser.add_argument("--specs", nargs="*", help="run 만: 이 모델 이름만 (없으면 전부)")
+    parser.add_argument(
+        "--think",
+        nargs="*",
+        choices=[think.value for think in Think],
+        help="run 만: 이 think 값의 spec 만 (예: off low — 오래 걸리는 on 을 나중에 따로)",
+    )
     parser.add_argument("--limit", type=int, default=0, help="run 만: 종류마다 앞 n 문항만 (시험)")
     return parser.parse_args()
 
 
-def run(set_names: Sequence[str], run_id: str, *, specs: Sequence[str] | None, limit: int) -> None:
+def run(
+    set_names: Sequence[str],
+    run_id: str,
+    *,
+    specs: Sequence[str] | None,
+    thinks: Sequence[str] | None,
+    limit: int,
+) -> None:
     items = [item for name in set_names for item in _read_jsonl(DATA / name / "items.jsonl")]
     if limit:
         by_kind: dict[str, list[dict]] = defaultdict(list)
@@ -146,7 +160,11 @@ def run(set_names: Sequence[str], run_id: str, *, specs: Sequence[str] | None, l
     }
     _write_run_meta(run_dir, set_names)
     library = PromptLibrary.load(PROMPTS)
-    chosen = [spec for spec in SPECS if not specs or spec.name in specs]
+    chosen = [
+        spec
+        for spec in SPECS
+        if (not specs or spec.name in specs) and (not thinks or spec.think.value in thinks)
+    ]
     config = OllamaConfig(url=OllamaConfig.from_env().url, timeout_sec=TIMEOUT_SEC)
     start = time.perf_counter()
     with OllamaLLM.connect(config) as llm:
