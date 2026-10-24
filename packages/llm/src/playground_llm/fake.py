@@ -23,7 +23,7 @@ class FakeLLM:
     """LLM Protocol 을 채우는 가짜 클라이언트. 답은 순서대로 쓰고, 마지막 답은 계속 반복한다.
 
     think 가 켜진 spec 이면 thinking 에 고정 문구를 넣어 thinking/text 분리를 시험할 수 있다.
-    토큰 수는 공백으로 나눈 단어 수로 셈한다.
+    토큰 수는 공백으로 나눈 단어 수로 셈한다. max_tokens 로 자르지 않으므로 done_reason 은 늘 stop.
 
     예)
         llm = FakeLLM(["서울입니다."])
@@ -59,7 +59,7 @@ class FakeLLM:
             completion_tokens=completion,
             total_ms=0,
         )
-        return Generation(text=text, model=spec, usage=usage, thinking=thinking)
+        return Generation(text=text, model=spec, usage=usage, thinking=thinking, done_reason="stop")
 
     def stream(
         self, spec: ModelSpec, messages: Sequence[Message]

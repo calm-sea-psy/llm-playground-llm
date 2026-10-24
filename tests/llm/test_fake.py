@@ -39,6 +39,16 @@ def test_fake_fills_thinking_only_when_think_is_on():
     assert on.usage.completion_tokens > off.usage.completion_tokens == 2
 
 
+def test_fake_generation_always_stops():
+    long_answer = "가 " * 50
+    llm = FakeLLM([long_answer])
+
+    generation = llm.generate(SPEC.with_params(max_tokens=4), QUESTION)
+
+    assert generation.done_reason == "stop"
+    assert generation.text == long_answer  # max_tokens 로 자르지 않는다
+
+
 def test_fake_reply_can_depend_on_input():
     def echo(spec: ModelSpec, messages: Sequence[Message]) -> str:
         return f"{spec.name}:{messages[-1].content}"
