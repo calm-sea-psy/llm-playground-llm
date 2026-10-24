@@ -8,10 +8,12 @@
          bench/data/runs/{run_id}/outputs.jsonl 에 이어 쓴다. 멈췄다 다시 돌리면 끝난 것은 건너뛴다.
          --set 을 여러 번 주면 세트를 한 실행에 모은다 (이미 있는 실행에 세트를 더해도 된다).
          모드: rag(세트의 상위 5 청크를 문맥으로) · norag(문맥 없이 — NORAG_KINDS 만, think 를 끌 수 있는 spec 만)
+         패러프레이즈(paraphrase)는 기본으로 norag 만 돈다. rag 는 오염 판정 확인 단계에서 --paraphrase-rag 로
   score  outputs 를 채점해 records.jsonl(문항 id 별 점수만) · reports/{run_id}.md(집계)를 쓴다
+         패러프레이즈 세트가 실행에 있으면 오염 판정(원문 vs 패러프레이즈) 절을 더한다
 
 채점은 전부 자동이다 (LLM 판정기 없음). 거절은 문구가 아니라 answer 가 null 인지로만 센다.
-  answerable · longtail · benign_sensitive
+  answerable · longtail · benign_sensitive · paraphrase
               EM · F1 (KorQuAD 공식 규칙, 정답 표기 전부 중 최댓값) · 정답 포함(공백 무시, 보조 지표) ·
               잘못 거절 · 틀린 답을 문맥에 없는 문자열(지어냄)과 있는 문자열(잘못 읽음)로 나눔 · 근거 제목
   no_doc · no_fact  답하면 위반. 정답을 맞혔으면 "기억으로 맞힘", 문맥에 있는 문자열이면 "문맥에서 짐작", 아니면 "지어냄"
@@ -27,7 +29,9 @@ bench/data/ 는 git 제외 (KorQuAD CC BY-ND — 질문 · 문맥 · 모델 출�
   uv run python bench/f4_bench.py run --set f4-korquad-xxxxxxxx --set f4-extra-v1 --run-id 2026-10-24-f4-stage1
   uv run python bench/f4_bench.py run --set ... --run-id ... --think off low   # 오래 걸리는 think on 은 따로
   uv run python bench/f4_bench.py run --set ... --run-id smoke --specs gemma4:12b --limit 5
+  uv run python bench/f4_bench.py run --set f4-paraphrase-v1 --run-id ... --specs gemma4:12b --think off --paraphrase-rag
   uv run python bench/f4_bench.py score --run-id 2026-10-24-f4-stage1
+  uv run python bench/f4_bench.py score --run-id 2026-10-24-f4-stage1 --data D:/copy/bench-data
 """
 
 import argparse
@@ -36,22 +40,26 @@ import math
 import statistics
 import time
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, Sequence, Set
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import BaseModel
 
 from playground_evalkit import (
+    PairedBootstrap,
     ResultRecord,
     exact_match,
     f1,
     normalize_title,
+    paired_bootstrap,
     percentile,
     render_table,
     squash,
     write_records,
 )
+from playground_evalkit.stats import BOOTSTRAP_RESAMPLES
 from playground_llm import (
     GenerationError,
     Message,
@@ -94,13 +102,18 @@ WARMUP = [
 ]  # 모델 첫 적재 1회를 지연에서 빼려고 먼저 한 번 부른다
 LAST_TEXT_CHARS = 300  # JSON 실패 때 남기는 출력 앞부분
 # 문항 종류(세트 빌더가 붙인 kind)마다 채점 방식
-ANSWERABLE_KINDS = frozenset({"answerable", "longtail", "benign_sensitive"})  # 문맥에 정답이 있다
+# 문맥에 정답이 있다. paraphrase 는 answerable(KorQuAD) 질문만 바꾼 것 — 문맥 · 정답이 원문 그대로라 채점도 같다
+ANSWERABLE_KINDS = frozenset({"answerable", "longtail", "benign_sensitive", "paraphrase"})
 NO_ANSWER_KINDS = frozenset({"no_doc", "no_fact"})  # 문맥에 정답이 없다 — 답하면 위반
 INJECTION_KINDS = frozenset(
     {"injection_indirect", "injection_direct"}
 )  # 정답도 있고 공격도 들어 있다
-# no-RAG 기준선을 도는 종류 — no_fact 는 지식 억제 2×2 의 "아는지" 축
-NORAG_KINDS = frozenset({"answerable", "longtail", "no_fact"})
+# no-RAG 기준선을 도는 종류 — no_fact 는 지식 억제 2×2 의 "아는지" 축, paraphrase 는 오염 판정
+NORAG_KINDS = frozenset({"answerable", "longtail", "no_fact", "paraphrase"})
+# 오염 판정 문턱 (결과를 보기 전에 고정 — 바꾸지 않는다). 원문 − 패러프레이즈 no-RAG F1 차이와 외움 추정 둘 다
+# 평균이 이 값 이상이고 짝지은 bootstrap 95% 하한 > 0 이면 발동
+CONTAMINATION_GAP = 0.10
+ALL_PAIRS = "전체"  # 오염 판정 표에서 판정에 쓰는 줄 (다른 줄은 검수 비고 문항을 뺀 참고값)
 
 
 class BenchAnswer(BaseModel):
@@ -110,12 +123,46 @@ class BenchAnswer(BaseModel):
     evidence: str | None
 
 
+@dataclass(frozen=True)
+class ParaphrasePair:
+    """한 spec · 한 모드에서 원문 문항과 그 패러프레이즈 문항의 F1."""
+
+    paraphrase_id: str
+    noted: bool
+    """패러프레이즈에 사람 검수 비고(review_note)가 붙었는지 — 정답은 같지만 표현이 달라졌다고 본 문항."""
+    original: float
+    paraphrase: float
+
+    @property
+    def gap(self) -> float:
+        """원문 F1 − 패러프레이즈 F1."""
+        return self.original - self.paraphrase
+
+
+@dataclass(frozen=True)
+class Contamination:
+    """리포트의 오염 판정 몫."""
+
+    alerts: tuple[str, ...]
+    """리포트 맨 위에 적을 알림. 발동한 것이 없으면 빈 튜플."""
+    lines: tuple[str, ...]
+    """오염 판정 절. 실행에 패러프레이즈 세트가 없으면 빈 튜플."""
+
+
 def main() -> None:
     args = _parse_args()
     if args.step == "run":
-        run(args.set, args.run_id, specs=args.specs, thinks=args.think, limit=args.limit)
+        run(
+            args.set,
+            args.run_id,
+            data=args.data,
+            specs=args.specs,
+            thinks=args.think,
+            limit=args.limit,
+            paraphrase_rag=args.paraphrase_rag,
+        )
     else:
-        score(args.run_id)
+        score(args.run_id, data=args.data)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -135,6 +182,17 @@ def _parse_args() -> argparse.Namespace:
         help="run 만: 이 think 값의 spec 만 (예: off low — 오래 걸리는 on 을 나중에 따로)",
     )
     parser.add_argument("--limit", type=int, default=0, help="run 만: 종류마다 앞 n 문항만 (시험)")
+    parser.add_argument(
+        "--paraphrase-rag",
+        action="store_true",
+        help="run 만: 패러프레이즈를 rag 로도 돈다 (오염 판정 확인 단계 — --specs 로 발동 spec 만 고른다)",
+    )
+    parser.add_argument(
+        "--data",
+        type=Path,
+        default=DATA,
+        help="세트 폴더와 runs/ 가 있는 폴더 (기본 bench/data)",
+    )
     return parser.parse_args()
 
 
@@ -142,17 +200,19 @@ def run(
     set_names: Sequence[str],
     run_id: str,
     *,
+    data: Path,
     specs: Sequence[str] | None,
     thinks: Sequence[str] | None,
     limit: int,
+    paraphrase_rag: bool,
 ) -> None:
-    items = [item for name in set_names for item in _read_jsonl(DATA / name / "items.jsonl")]
+    items = [item for name in set_names for item in _read_jsonl(data / name / "items.jsonl")]
     if limit:
         by_kind: dict[str, list[dict]] = defaultdict(list)
         for item in items:
             by_kind[item["kind"]].append(item)
         items = [item for group in by_kind.values() for item in group[:limit]]
-    run_dir = DATA / "runs" / run_id
+    run_dir = data / "runs" / run_id
     outputs_path = run_dir / "outputs.jsonl"
     done = {
         (row["spec_id"], row["mode"], row["item_id"])
@@ -169,13 +229,7 @@ def run(
     start = time.perf_counter()
     with OllamaLLM.connect(config) as llm:
         for spec in chosen:
-            jobs = [
-                (mode, item)
-                for mode in _modes(spec)
-                for item in items
-                if (spec.spec_id, mode, item["id"]) not in done
-                and (mode == "rag" or item["kind"] in NORAG_KINDS)
-            ]
+            jobs = _jobs(spec, items, done, paraphrase_rag=paraphrase_rag)
             if not jobs:
                 continue
             print(f"{spec.spec_id}: {len(jobs)}건", flush=True)
@@ -190,6 +244,31 @@ def run(
 def _modes(spec: ModelSpec) -> tuple[str, ...]:
     # no-RAG 기준선은 think OFF spec 만 (1단계) — 아는지만 보면 되고 think ON 은 시간이 대부분이다
     return ("rag", "norag") if spec.think is Think.OFF else ("rag",)
+
+
+def _jobs(
+    spec: ModelSpec,
+    items: Sequence[dict],
+    done: Set[tuple[str, str, str]],
+    *,
+    paraphrase_rag: bool,
+) -> list[tuple[str, dict]]:
+    """spec 이 돌 (모드, 문항) 을 모드 순서대로 돌려준다. done 의 (spec_id, 모드, 문항 id) 는 뺀다."""
+    modes = _modes(spec)
+    jobs = []
+    for mode in modes:
+        for item in items:
+            kind = item["kind"]
+            if (spec.spec_id, mode, item["id"]) in done:
+                continue
+            if mode == "norag" and kind not in NORAG_KINDS:
+                continue
+            # 패러프레이즈 with-RAG 는 오염 판정 확인 단계에서만 — 짝지을 no-RAG 가 있는 spec 에 플래그를 줄 때.
+            # --specs gemma4:12b 는 think ON spec 도 고르므로 no-RAG 없는 spec 은 여기서 거른다
+            if mode == "rag" and kind == "paraphrase" and not (paraphrase_rag and "norag" in modes):
+                continue
+            jobs.append((mode, item))
+    return jobs
 
 
 def _ask(llm: OllamaLLM, library: PromptLibrary, spec: ModelSpec, mode: str, item: dict) -> dict:
@@ -246,13 +325,13 @@ def _format_context(chunks: Sequence[Mapping[str, object]]) -> str:
     )
 
 
-def score(run_id: str) -> None:
-    run_dir = DATA / "runs" / run_id
+def score(run_id: str, *, data: Path = DATA, reports: Path = REPORTS) -> None:
+    run_dir = data / "runs" / run_id
     meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
     items = {
         item["id"]: item
         for name in _set_names(meta)
-        for item in _read_jsonl(DATA / name / "items.jsonl")
+        for item in _read_jsonl(data / name / "items.jsonl")
     }
     outputs = _read_jsonl(run_dir / "outputs.jsonl")
     now = datetime.now(tz=UTC).isoformat(timespec="seconds")
@@ -272,8 +351,8 @@ def score(run_id: str) -> None:
         )
     count = write_records(run_dir / "records.jsonl", records)
     lines = _report(run_id, meta, outputs, records, items)
-    REPORTS.mkdir(exist_ok=True)
-    path = REPORTS / f"{run_id}.md"
+    reports.mkdir(parents=True, exist_ok=True)
+    path = reports / f"{run_id}.md"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
     print(f"기록 {count}건 · {path}")
@@ -391,9 +470,11 @@ def _report(
     robust = [
         row for row in (_robust_row(spec_id, groups) for spec_id, groups in by_spec.items()) if row
     ]
-    lines = [
-        f"# F4 LLM 벤치 1단계 — {run_id}",
-        "",
+    contamination = _contamination(run_id, records, items)
+    lines = [f"# F4 LLM 벤치 1단계 — {run_id}", ""]
+    for alert in contamination.alerts:  # 하나라도 발동하면 맨 위에
+        lines += [alert, ""]
+    lines += [
         f"세트 {' · '.join(f'`{name}`' for name in _set_names(meta))} "
         "(검색을 고정한 KorQuAD bench 몫 — 상위 5 안에 정답이 든 문항만이라 end-to-end 정확도가 아니다). "
         f"프롬프트 `bench/prompts` (f4_rag@v1 · f4_norag@v1), temperature 0 · seed 0 · num_ctx 8192. 채점은 자동 (판정기 없음).",
@@ -417,7 +498,7 @@ def _report(
             "",
             render_table(robust, list(dict.fromkeys(key for row in robust for key in row))),
         ]
-    return lines
+    return lines + list(contamination.lines)
 
 
 def _robust_row(spec_id: str, groups: Mapping[str, list[ResultRecord]]) -> dict | None:
@@ -445,6 +526,216 @@ def _robust_row(spec_id: str, groups: Mapping[str, list[ResultRecord]]) -> dict 
         "└ 원래 질문 EM": _pct(_mean(indirect, "em")),
         "직접 인젝션 유출": _pct(_mean(direct, "attack_success")),
     }
+
+
+def _contamination(
+    run_id: str, records: Sequence[ResultRecord], items: Mapping[str, dict]
+) -> Contamination:
+    """오염 판정 절과 맨 위 알림을 돌려준다. 실행에 패러프레이즈 세트가 없으면 둘 다 비운다."""
+    if not any(item["kind"] == "paraphrase" for item in items.values()):
+        return Contamination(alerts=(), lines=())
+    gap_pct = f"{CONTAMINATION_GAP * 100:.0f}%p"
+    lines = [
+        "",
+        "## 오염 판정 (원문 vs 패러프레이즈)",
+        "",
+        "결과를 보기 전에 고정한 규칙. think OFF spec 마다 문맥 없이(no-RAG) 원문 KorQuAD 질문과 같은 뜻의 "
+        "패러프레이즈 질문을 문항마다 짝지어 F1 차이(원문 − 패러프레이즈)를 낸다 — 사실을 알면 표현이 바뀌어도 "
+        "점수가 유지되고, 질문 · 답 쌍을 외웠으면 원문에서만 높다. "
+        f"구간은 짝지은 bootstrap ({BOOTSTRAP_RESAMPLES}회 · seed 0) 95%. "
+        f"차이 ≥ {gap_pct} 이고 하한 > 0 이면 확인 단계 필요 (하나라도 발동하면 맨 위에 적는다). "
+        "칸은 %p, n 은 짝지은 문항 수. 검수 비고 뺌 = 사람 검수에서 표현이 달라졌다고 본 패러프레이즈"
+        "(review_note)와 그 짝을 뺀 값 — 판정은 전체 줄로 한다.",
+        "",
+    ]
+    norag = _paraphrase_pairs(records, items, "norag")
+    if not norag:
+        lines.append("패러프레이즈 출력 없음 — 패러프레이즈 세트로 run 을 돌린 뒤 다시 score 한다.")
+        return Contamination(alerts=(), lines=tuple(lines))
+    rows, fired = _norag_rows(norag)
+    lines += [render_table(rows, list(rows[0])), "### 확인 단계 (with-RAG)", ""]
+    rag = _paraphrase_pairs(records, items, "rag")
+    if not fired and not rag:
+        lines.append("발동한 spec 이 없어 건너뛴다.")
+        return Contamination(alerts=(), lines=tuple(lines))
+    lines += [
+        "발동한 spec 만 패러프레이즈를 with-RAG 로도 돌린다. 문맥은 원문 문항의 상위 5 청크 그대로 "
+        "(다시 검색하지 않는다). 외움 추정 = no-RAG 차이 − with-RAG 차이 (문항마다 짝지어 bootstrap). "
+        f"외움 추정 ≥ {gap_pct} 이고 하한 > 0 이면 1단계 순위 기준을 롱테일 100 으로 옮긴다 "
+        "— 순위 계산은 그대로, 표시만. with-RAG 차이만 크면 외움이 아니라 표현 민감도라 옮기지 않는다. "
+        "n 은 네 기록(원문 · 패러프레이즈 × no-RAG · with-RAG)이 다 있는 문항 수.",
+        "",
+        "- 가정 1: 빼기는 표현 민감도가 문맥 유무와 상관없이 같은 크기라고 본다.",
+        "- 가정 2: with-RAG F1 이 천장(약 85 이상)에 붙으면 그쪽 차이가 눌려 외움 추정이 실제보다 "
+        "크게 나온다 — 잘못 발동하는 쪽으로 치우친다.",
+        "",
+    ]
+    confirm_rows, moved = _confirmation_rows(norag, rag, fired)
+    if confirm_rows:
+        lines.append(render_table(confirm_rows, list(confirm_rows[0])))
+    models = {record.spec_id: str(record.spec["model"]) for record in records}
+    pending = [spec_id for spec_id in fired if spec_id not in rag]
+    if pending:
+        lines.append(
+            f"확인 단계 출력 없음: {_names(pending, models)} — 맨 위 명령으로 돌린 뒤 다시 score 한다."
+        )
+    return Contamination(
+        alerts=_contamination_alerts(run_id, fired, pending, moved, models), lines=tuple(lines)
+    )
+
+
+def _norag_rows(
+    norag: Mapping[str, Sequence[ParaphrasePair]],
+) -> tuple[list[dict], list[str]]:
+    """no-RAG 차이 표의 줄과, 발동한(전체 줄이 문턱을 넘은) spec_id 를 돌려준다."""
+    rows = []
+    fired = []
+    for spec_id, pairs in norag.items():
+        for label, subset in _subsets(pairs):
+            gap = paired_bootstrap(
+                [pair.original for pair in subset], [pair.paraphrase for pair in subset]
+            )
+            rows.append(
+                {
+                    "spec": spec_id.removeprefix("ollama/"),
+                    "문항": label,
+                    "n": len(subset),
+                    "원문 F1": _pct(statistics.fmean(pair.original for pair in subset)),
+                    "패러프레이즈 F1": _pct(statistics.fmean(pair.paraphrase for pair in subset)),
+                    "차이": _pct(gap.mean_difference),
+                    "95% 구간": _interval(gap),
+                    "판정": "확인 단계 필요" if _fires(gap) else "-",
+                }
+            )
+            if label == ALL_PAIRS and _fires(gap):
+                fired.append(spec_id)
+    return rows, fired
+
+
+def _confirmation_rows(
+    norag: Mapping[str, Sequence[ParaphrasePair]],
+    rag: Mapping[str, Sequence[ParaphrasePair]],
+    fired: Sequence[str],
+) -> tuple[list[dict], list[str]]:
+    """확인 단계 표의 줄과, 1단계 순위 기준을 롱테일로 옮길 spec_id 를 돌려준다.
+
+    옮기는 것은 발동한 spec 의 전체 줄에서 외움 추정이 문턱을 넘을 때만이다.
+    """
+    rows = []
+    moved = []
+    for spec_id, pairs in norag.items():
+        rag_by_id = {pair.paraphrase_id: pair for pair in rag.get(spec_id, ())}
+        for label, subset in _subsets([pair for pair in pairs if pair.paraphrase_id in rag_by_id]):
+            norag_gaps = [pair.gap for pair in subset]
+            rag_pairs = [rag_by_id[pair.paraphrase_id] for pair in subset]
+            memorized = paired_bootstrap(norag_gaps, [pair.gap for pair in rag_pairs])
+            if spec_id not in fired:
+                verdict = "참고 (발동 안 한 spec)"
+            else:
+                verdict = "롱테일 100 으로 옮김" if _fires(memorized) else "옮기지 않음"
+            rows.append(
+                {
+                    "spec": spec_id.removeprefix("ollama/"),
+                    "문항": label,
+                    "n": len(subset),
+                    "RAG 원문 F1": _pct(statistics.fmean(pair.original for pair in rag_pairs)),
+                    "RAG 패러프레이즈 F1": _pct(
+                        statistics.fmean(pair.paraphrase for pair in rag_pairs)
+                    ),
+                    "no-RAG 차이": _pct(statistics.fmean(norag_gaps)),
+                    "with-RAG 차이": _pct(statistics.fmean(pair.gap for pair in rag_pairs)),
+                    "외움 추정": _pct(memorized.mean_difference),
+                    "95% 구간": _interval(memorized),
+                    "판정": verdict,
+                }
+            )
+            if label == ALL_PAIRS and spec_id in fired and _fires(memorized):
+                moved.append(spec_id)
+    return rows, moved
+
+
+def _contamination_alerts(
+    run_id: str,
+    fired: Sequence[str],
+    pending: Sequence[str],
+    moved: Sequence[str],
+    models: Mapping[str, str],
+) -> tuple[str, ...]:
+    """리포트 맨 위에 적을 오염 판정 알림 (발동 · 확인 단계 대기 · 순위 기준 옮김)."""
+    gap_pct = f"{CONTAMINATION_GAP * 100:.0f}%p"
+    alerts = []
+    if fired:
+        alert = (
+            f"> **오염 판정 발동** (no-RAG 원문 − 패러프레이즈 F1 ≥ {gap_pct}, 하한 > 0): "
+            f"{_names(fired, models)} — 확인 단계 필요. 자세한 값은 맨 아래 오염 판정 절."
+        )
+        if pending:
+            names = " ".join(models[spec_id] for spec_id in pending)
+            alert += (
+                f" 확인 단계 출력 없음 — `uv run python bench/f4_bench.py run --set (패러프레이즈 세트) "
+                f"--run-id {run_id} --specs {names} --think off --paraphrase-rag` 로 돌린 뒤 다시 score 한다."
+            )
+        alerts.append(alert)
+    if moved:
+        alerts.append(
+            f"> **1단계 순위 기준을 롱테일 100 으로 옮김** (외움 추정 ≥ {gap_pct}, 하한 > 0): "
+            f"{_names(moved, models)}. 아래 순위 표는 그대로 두고 표시만 한다."
+        )
+    return tuple(alerts)
+
+
+def _paraphrase_pairs(
+    records: Sequence[ResultRecord], items: Mapping[str, dict], mode: str
+) -> dict[str, list[ParaphrasePair]]:
+    """think OFF spec 마다, 이 모드에서 원문 · 패러프레이즈 기록이 둘 다 있는 문항 쌍을 돌려준다."""
+    # no-RAG 는 think OFF spec 만 돈다 (_modes). with-RAG 도 같은 spec 만 짝지어야 외움 추정을 뺄 수 있다
+    f1s = {
+        (record.spec_id, record.item_id): record.scores["f1"]
+        for record in records
+        if record.spec["think"] == Think.OFF.value and "f1" in record.scores
+    }
+    pairs: dict[str, list[ParaphrasePair]] = defaultdict(list)
+    for (spec_id, key), paraphrase_f1 in f1s.items():
+        record_mode, item_id = key.split("/", 1)
+        item = items[item_id]
+        if record_mode != mode or item["kind"] != "paraphrase":
+            continue
+        # source_id 는 원문 KorQuAD 문항의 id — 원문 기록이 아직 없는 문항은 짝짓지 않는다
+        original_f1 = f1s.get((spec_id, f"{mode}/{item['source_id']}"))
+        if original_f1 is None:
+            continue
+        pairs[spec_id].append(
+            ParaphrasePair(
+                paraphrase_id=item_id,
+                noted=bool(item.get("review_note")),
+                original=original_f1,
+                paraphrase=paraphrase_f1,
+            )
+        )
+    return dict(pairs)
+
+
+def _subsets(pairs: Sequence[ParaphrasePair]) -> list[tuple[str, list[ParaphrasePair]]]:
+    """표에 낼 (줄 이름, 쌍) 을 돌려준다. 전체가 먼저, 검수 비고 문항이 짝에 있으면 그것을 뺀 줄이 뒤에."""
+    if not pairs:
+        return []
+    subsets = [(ALL_PAIRS, list(pairs))]
+    kept = [pair for pair in pairs if not pair.noted]
+    if 0 < len(kept) < len(pairs):  # 비고 문항이 없으면 전체와 같은 줄이라 내지 않는다
+        subsets.append(("검수 비고 뺌", kept))
+    return subsets
+
+
+def _fires(result: PairedBootstrap) -> bool:
+    return result.mean_difference >= CONTAMINATION_GAP and result.low > 0
+
+
+def _interval(result: PairedBootstrap) -> str:
+    return f"{_pct(result.low)} ~ {_pct(result.high)}"
+
+
+def _names(spec_ids: Sequence[str], models: Mapping[str, str]) -> str:
+    return ", ".join(f"`{models[spec_id]}`" for spec_id in spec_ids)
 
 
 def _set_names(meta: Mapping[str, object]) -> list[str]:
