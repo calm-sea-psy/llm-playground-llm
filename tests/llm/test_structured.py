@@ -5,7 +5,15 @@ import httpx
 import pytest
 from pydantic import BaseModel, Field
 
-from playground_llm import FakeLLM, Message, ModelSpec, StructuredOutputError, Think
+from playground_llm import (
+    FakeLLM,
+    Generation,
+    Message,
+    ModelSpec,
+    StructuredOutputError,
+    Think,
+    Usage,
+)
 from playground_llm.ollama import OllamaConfig, OllamaLLM
 from playground_llm.structured import generate_json
 
@@ -62,6 +70,30 @@ def test_no_retry_when_retries_is_zero():
         generate_json(llm, SPEC, QUESTION, Answer, retries=0)
 
     assert len(llm.calls) == 1
+
+
+class _CutLLM:
+    """thinking 이 max_tokens 를 다 써 답이 잘려 오는 LLM."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def generate(self, spec, messages, *, json_schema=None) -> Generation:
+        self.calls += 1
+        return Generation(
+            text='{"answer": "한', model=spec, usage=Usage(3, 64, 0), done_reason="length"
+        )
+
+
+def test_cut_output_is_not_retried_and_reports_length():
+    llm = _CutLLM()
+
+    with pytest.raises(StructuredOutputError, match="max_tokens") as caught:
+        generate_json(llm, SPEC, QUESTION, Answer, retries=2)
+
+    assert caught.value.done_reason == "length"
+    assert caught.value.attempts == 1
+    assert llm.calls == 1  # 같은 한도에서 또 잘리니 다시 묻지 않는다
 
 
 def test_thinking_is_kept_apart_from_parsed_text():
