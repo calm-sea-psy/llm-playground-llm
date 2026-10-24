@@ -40,6 +40,7 @@ def generate_json[T: BaseModel](
     """주어진 schema 의 JSON Schema 를 서버에 요구하고, 답을 schema 로 검증해 돌려준다.
 
     형식이 틀리면 틀린 출력과 검증 오류를 대화에 붙여 retries 번까지 다시 요청한다.
+    출력이 max_tokens 에 닿아 잘렸으면 다시 요청하지 않는다 — 같은 한도에서 또 잘린다.
 
     Args:
       llm: LLM 클라이언트.
@@ -49,7 +50,7 @@ def generate_json[T: BaseModel](
       retries: 형식이 틀렸을 때 다시 요청하는 최대 횟수 (0 이상).
 
     Raises:
-      StructuredOutputError: 다시 요청해도 형식이 맞지 않을 때.
+      StructuredOutputError: 다시 요청해도 형식이 맞지 않을 때, 또는 잘려서 맞지 않을 때 (done_reason 이 length).
       GenerationError: LLM 호출이 실패했을 때 (generate 와 같은 예외들).
     """
     if retries < 0:
@@ -62,11 +63,19 @@ def generate_json[T: BaseModel](
         try:
             value = schema.model_validate_json(generation.text)
         except ValidationError as e:
+            if generation.done_reason == "length":
+                raise StructuredOutputError(
+                    f"{spec.name}: output was cut at max_tokens before a valid {schema.__name__}",
+                    last_text=generation.text,
+                    attempts=attempt,
+                    done_reason="length",
+                ) from e
             if attempt > retries:
                 raise StructuredOutputError(
                     f"{spec.name}: output does not match {schema.__name__} after {attempt} attempts",
                     last_text=generation.text,
                     attempts=attempt,
+                    done_reason=generation.done_reason,
                 ) from e
             conversation += [generation.as_message(), Message("user", _retry_prompt(e))]
             attempt += 1

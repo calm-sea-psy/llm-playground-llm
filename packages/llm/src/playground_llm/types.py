@@ -14,6 +14,10 @@ type ParamValue = str | int | float | bool | tuple[str, ...]
 Role = Literal["system", "user", "assistant"]
 ROLES: tuple[str, ...] = get_args(Role)
 
+DoneReason = Literal["stop", "length"]
+"""생성이 멈춘 이유. stop 은 모델이 스스로 끝냈거나 stop 문자열을 만난 것, length 는 max_tokens 에 닿아 잘린 것."""
+DONE_REASONS: tuple[str, ...] = get_args(DoneReason)
+
 THINK = "think"
 """thinking 설정 params 키. 값은 Think ("low" 같은 문자열도 받아 Think 로 바꾼다).
 값이 다르면 spec_id 가 달라 벤치에서 따로 잰다."""
@@ -126,6 +130,8 @@ class Generation:
     usage: Usage
     thinking: str | None = None
     """thinking 내용. 꺼져 있거나 서버가 주지 않으면 None."""
+    done_reason: DoneReason | None = None
+    """멈춘 이유. thinking 이 max_tokens 를 다 쓰면 text 가 빈 채 length 다. 서버가 주지 않거나 모르는 값이면 None."""
     raw_json: str | None = None
     """서버 응답 원문 JSON. 디버그에 꼭 필요할 때만 채운다."""
 

@@ -136,6 +136,25 @@ def test_generate_without_thinking_field_gives_none():
     assert llm.generate(SPEC, MESSAGES).thinking is None
 
 
+@pytest.mark.parametrize(
+    ("server", "expected"),
+    [("stop", "stop"), ("length", "length"), (None, None), ("unload", None)],
+)
+def test_generate_and_stream_read_done_reason(server: str | None, expected: str | None):
+    final = {**FINAL, "done_reason": server} if server else FINAL
+    body = {"message": {"role": "assistant", "content": "391"}, **final}
+    lines = [{"message": {"content": "391"}}, {"message": {"content": ""}, **final}]
+    payload = "\n".join(json.dumps(line) for line in lines) + "\n"
+    generate_llm, _ = _llm(lambda _: httpx.Response(200, json=body))
+    stream_llm, _ = _llm(lambda _: httpx.Response(200, content=payload.encode()))
+
+    streamed = list(stream_llm.stream(SPEC, MESSAGES))[-1]
+
+    assert generate_llm.generate(SPEC, MESSAGES).done_reason == expected
+    assert isinstance(streamed, Generation)
+    assert streamed.done_reason == expected
+
+
 def test_stream_yields_thinking_then_text_then_generation():
     lines = [
         {"message": {"thinking": "17×20=340, "}},
@@ -238,11 +257,29 @@ def test_live_think_off_returns_no_thinking(live: OllamaLLM):
 
     assert off.thinking is None
     assert "391" in off.text
+    assert off.done_reason == "stop"
     final = streamed[-1]
     assert isinstance(final, Generation)
     assert final.thinking  # 켜면 thinking 이 따로 온다
     assert "391" in final.text
     assert final.usage.completion_tokens > off.usage.completion_tokens
+
+
+def test_live_done_reason_is_length_when_max_tokens_cuts_the_answer(live: OllamaLLM):
+    spec = ModelSpec(
+        "ollama",
+        os.environ.get("OLLAMA_TEST_MODEL", "gemma4:12b"),
+        {"temperature": 0, "max_tokens": 8},
+    )
+    question = [Message("user", "조선의 왕 27명을 순서대로 모두 설명해 줘.")]
+
+    cut = live.generate(spec, question)
+    streamed = list(live.stream(spec, question))[-1]
+
+    assert cut.done_reason == "length"
+    assert cut.usage.completion_tokens == 8
+    assert isinstance(streamed, Generation)
+    assert streamed.done_reason == "length"
 
 
 # 아래 test_live_rule_* 는 THINK_RULES 의 근거가 지금 서버에서도 맞는지 본다.

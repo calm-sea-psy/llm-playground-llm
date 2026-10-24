@@ -13,12 +13,15 @@ import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import cast
 
 import httpx
 
 from playground_llm.errors import GenerationError, GenerationTimeoutError, ModelNotFoundError
 from playground_llm.types import (
+    DONE_REASONS,
     THINK,
+    DoneReason,
     Generation,
     Message,
     ModelSpec,
@@ -188,6 +191,7 @@ class OllamaLLM:
             model=spec,
             usage=_usage(body, start),
             thinking=message.get("thinking") or None,
+            done_reason=_done_reason(body),
         )
 
     def stream(
@@ -230,6 +234,7 @@ class OllamaLLM:
             model=spec,
             usage=_usage(final, start),
             thinking="".join(thinking) or None,
+            done_reason=_done_reason(final),
         )
 
 
@@ -284,6 +289,13 @@ def _usage(body: Mapping[str, object], start: float) -> Usage:
         prompt_eval_ms=ms("prompt_eval_duration"),
         eval_ms=ms("eval_duration"),
     )
+
+
+def _done_reason(body: Mapping[str, object]) -> DoneReason | None:
+    # Ollama 는 마지막 조각에 stop · length 를 준다 (0.40.9 확인). load · unload 는 메시지 없는
+    # 요청(모델 올리기 · 내리기)에서만 오는데 chat_request 가 빈 메시지를 막는다
+    value = body.get("done_reason")
+    return cast("DoneReason", value) if value in DONE_REASONS else None
 
 
 def _raise_for_status(response: httpx.Response, spec: ModelSpec) -> None:

@@ -15,8 +15,10 @@ from playground_llm.fake import FakeCall, FakeLLM
 from playground_llm.prompts import Prompt, PromptError, PromptLibrary, PromptTemplate, compose
 from playground_llm.protocols import LLM
 from playground_llm.types import (
+    DONE_REASONS,
     ROLES,
     THINK,
+    DoneReason,
     Generation,
     Message,
     ModelSpec,
@@ -28,9 +30,11 @@ from playground_llm.types import (
 )
 
 __all__ = [
+    "DONE_REASONS",
     "LLM",
     "ROLES",
     "THINK",
+    "DoneReason",
     "FakeCall",
     "FakeLLM",
     "Generation",
