@@ -1,0 +1,36 @@
+# 선정 답변 LLM (F4 결선, 2026-10-25)
+# 제품 쪽 설정(llm-playground-wiki configs/answer.yaml 의 profiles)은 모델 이름 · think 를 이 값으로 쓰고 출처로 이 파일을 적는다.
+# temperature · max_tokens · 프롬프트는 제품 프로필이 정한다 — 아래 bench 는 순위를 낸 조건이다.
+
+model:
+  provider: ollama
+  name: gemma4:12b
+  think: "off"  # YAML 은 off 를 bool 로 읽는다
+  # 같은 이름으로 다른 가중치가 받아지면 다시 잰다 — Ollama /api/tags 의 digest (2026-10-25 설치본)
+  digest: 4eb23ef187e2c5462566d6a1d3bbbc2f1346d0b4327cbb66d58fffbcc9b2b05c
+  parameter_size: 11.9B
+  quantization: Q4_K_M
+
+bench:
+  spec_id: ollama/gemma4:12b?max_tokens=256,num_ctx=8192,seed=0,temperature=0,think=off
+  prompt_version: f4_rag@v1:c67ef415+f4_question_rag@v1:ed68e6cf
+  runs: [2026-10-24-f4-stage1, 2026-10-25-f4-stage2]
+
+selected_by:
+  reports: [reports/2026-10-24-f4-stage1.md, reports/2026-10-25-f4-stage2.md]
+  # 1단계 spec 10개 → 결선 후보 둘 (think off). think on 은 잘림 46~98건 · p50 13~23초
+  finalists: [gemma4:12b, qwen3.5:9b]
+  # 결선은 롱테일 1 + 2단계 합산 (답 있음 400 · 사실 없음 300). 단위 %, 지연 ms (2단계)
+  longtail_f1: {gemma4:12b: 78.7, qwen3.5:9b: 75.1}
+  longtail_exact_ignoring_spaces: {gemma4:12b: 59.5, qwen3.5:9b: 56.8}
+  no_fact_violation: {gemma4:12b: 13.0, qwen3.5:9b: 9.0}
+  korquad_f1: {gemma4:12b: 86.7, qwen3.5:9b: 86.0}
+  no_doc_violation: {gemma4:12b: 26.0, qwen3.5:9b: 18.0}
+  p50_ms: {gemma4:12b: 1103, qwen3.5:9b: 698}
+  reason: >-
+    차이는 100문항당 3~4문항으로 작고 엇갈린다. 롱테일 F1 +3.7 [+1.0 ~ +6.5] 와
+    한국어 표기(qwen 은 날짜 답 198 중 24 를 '1999 년 1 월 1 일' 꼴로 띄어 쓰고, JSON null 대신 글자 "null" 7건)를
+    사실 없음 위반 +4.0%p · 지연 0.4초보다 앞에 뒀다.
+  accepted: >-
+    답이 없어야 할 문항에서 답하는 비율이 높다 (사실 없음 · 문서 없음 둘 다) — 거의 '문맥에서 짐작'.
+    위키 레포 F9 의 grounded 지어냄 비율로 다시 본다.
