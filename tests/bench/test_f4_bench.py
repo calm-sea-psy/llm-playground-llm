@@ -10,6 +10,7 @@ from playground_llm import ModelSpec, Think
 RUN_ID = "r1"
 ORIGINAL_SET = "korquad-mini"
 PARAPHRASE_SET = "paraphrase-mini"
+EXTRA_SET = "extra-mini"
 COUNT = 30
 NOTED_INDEX = 0  # 이 패러프레이즈에만 review_note 가 붙는다
 RIGHT, WRONG = "서울", "부산"
@@ -77,13 +78,21 @@ def _outputs(
 
 
 def _score(
-    f4_bench: ModuleType, tmp_path: Path, outputs: Sequence[dict], *, paraphrase_set: bool = True
+    f4_bench: ModuleType,
+    tmp_path: Path,
+    outputs: Sequence[dict],
+    *,
+    paraphrase_set: bool = True,
+    extra_items: Sequence[dict] = (),
+    pair: Sequence[str] | None = None,
 ) -> str:
     """합성 세트 · 출력으로 score 를 돌리고 리포트 글을 돌려준다."""
     data = tmp_path / "data"
     sets = {ORIGINAL_SET: [_item(f"korquad:{index}", "answerable") for index in range(COUNT)]}
     if paraphrase_set:
         sets[PARAPHRASE_SET] = [_paraphrase(index) for index in range(COUNT)]
+    if extra_items:
+        sets[EXTRA_SET] = list(extra_items)
     for name, items in sets.items():
         _write_jsonl(data / name / "items.jsonl", items)
     run_dir = data / "runs" / RUN_ID
@@ -91,7 +100,7 @@ def _score(
     (run_dir / "meta.json").write_text(json.dumps({"sets": list(sets)}), encoding="utf-8")
     _write_jsonl(run_dir / "outputs.jsonl", outputs)
     reports = tmp_path / "reports"
-    f4_bench.score(RUN_ID, data=data, reports=reports)
+    f4_bench.score(RUN_ID, data=data, reports=reports, pair=pair)
     return (reports / f"{RUN_ID}.md").read_text(encoding="utf-8")
 
 
@@ -332,6 +341,108 @@ def test_score_keeps_answers_that_only_contain_null(f4_bench: ModuleType):
 
     assert scores["failed"] == 0.0
     assert scores["answered"] == 1.0
+
+
+def _pair_outputs() -> tuple[list[dict], list[dict]]:
+    """짝지은 비교용 (출력, 사실 없음 문항). alpha 는 KorQuAD 를 다 맞히고 beta 는 앞 20 문항만.
+
+    beta 의 15~19 번은 정답을 띄어 써서(서 울) EM 만 0, 20~29 번은 문맥에 없는 값(지어냄).
+    no-RAG 는 반대로 beta 만 맞힌다. 사실 없음 10 문항은 alpha 만 앞 4 문항에 문맥의 다른 값을 답한다.
+    """
+    spaced = {f"korquad:{index}" for index in range(15, 20)}
+    beta = [
+        {**row, "answer": "서 울"} if row["mode"] == "rag" and row["item_id"] in spaced else row
+        for row in _outputs(
+            "beta",
+            norag_original=[True] * COUNT,
+            rag_original=[index < 20 for index in range(COUNT)],
+        )
+    ]
+    outputs = _outputs("alpha", norag_original=[False] * COUNT) + beta
+    no_fact = [_item(f"no_fact:{index}", "no_fact", answers=[WRONG]) for index in range(10)]
+    for index, item in enumerate(no_fact):
+        for model, answer in (("alpha", RIGHT if index < 4 else None), ("beta", None)):
+            row = _output(model, "rag", item["id"], "no_fact", correct=True)
+            outputs.append({**row, "answer": answer})
+    return outputs, no_fact
+
+
+def test_score_adds_paired_comparison(f4_bench: ModuleType, tmp_path: Path):
+    outputs, no_fact = _pair_outputs()
+
+    report = _score(
+        f4_bench,
+        tmp_path / "pair",
+        outputs,
+        paraphrase_set=False,
+        extra_items=no_fact,
+        pair=("alpha", "beta"),
+    )
+    plain = _score(f4_bench, tmp_path / "plain", outputs, paraphrase_set=False, extra_items=no_fact)
+
+    assert "## 짝지은 비교 (alpha − beta)" in report
+    assert "짝지은 비교" not in plain
+    rows = {row["지표"]: row for row in _table(report, "한쪽만")}
+    # 실행에 있는 종류(KorQuAD · 사실 없음)만, 종류마다 해당하는 지표만
+    assert list(rows) == [
+        "KorQuAD F1",
+        "KorQuAD EM",
+        "KorQuAD EM (띄어쓰기 무시)",
+        "KorQuAD 정답 포함",
+        "KorQuAD 잘못 거절",
+        "KorQuAD 잘못 읽음",
+        "KorQuAD 지어냄",
+        "KorQuAD no-RAG F1",
+        "사실 없음 위반",
+        "사실 없음 └ 문맥에서 짐작",
+    ]
+    f1_row = rows["KorQuAD F1"]
+    assert [f1_row[key] for key in ("n", "alpha", "beta", "차이", "한쪽만", "p")] == [
+        str(COUNT),
+        "100.0",
+        "66.7",
+        "+33.3",
+        "-",
+        "-",
+    ]
+    assert rows["KorQuAD EM"]["beta"] == "50.0"
+    assert rows["KorQuAD EM"]["한쪽만"] == "15 : 0"
+    assert rows["KorQuAD EM (띄어쓰기 무시)"]["beta"] == "66.7"  # 띄어 쓴 5 문항은 맞음
+    assert rows["KorQuAD EM (띄어쓰기 무시)"]["한쪽만"] == "10 : 0"
+    assert rows["KorQuAD 잘못 거절"]["한쪽만"] == "0 : 0"
+    assert rows["KorQuAD 잘못 거절"]["p"] == "1.000"
+    assert rows["KorQuAD 지어냄"]["차이"] == "-33.3"
+    assert rows["KorQuAD 지어냄"]["한쪽만"] == "0 : 10"
+    assert rows["KorQuAD no-RAG F1"]["95% 구간"] == "-100.0 ~ -100.0"
+    violation = rows["사실 없음 위반"]
+    assert [violation[key] for key in ("n", "alpha", "beta", "한쪽만", "p")] == [
+        "10",
+        "40.0",
+        "0.0",
+        "4 : 0",
+        "0.125",
+    ]
+    assert rows["사실 없음 └ 문맥에서 짐작"]["한쪽만"] == "4 : 0"
+
+
+@pytest.mark.parametrize(
+    "pair",
+    [("alpha", "gamma"), ("alpha", "theta"), ("alpha", "alpha")],
+    ids=["missing", "think-on-only", "same"],
+)
+def test_score_rejects_pair_without_one_think_off_spec(
+    f4_bench: ModuleType, tmp_path: Path, pair: tuple[str, str]
+):
+    outputs = _outputs("alpha", norag_original=[True] * COUNT)
+    # theta 는 think on spec 만 돌았다
+    outputs += [
+        {**row, "spec_id": "ollama/theta?think=on", "think": "on"}
+        for row in _outputs("theta", norag_original=())
+    ]
+
+    with pytest.raises(ValueError, match=pair[1]):
+        _score(f4_bench, tmp_path, outputs, paraphrase_set=False, pair=pair)
+    assert not (tmp_path / "data" / "runs" / RUN_ID / "records.jsonl").exists()  # 쓰기 전에 멈춘다
 
 
 def _spec(think: Think) -> ModelSpec:
