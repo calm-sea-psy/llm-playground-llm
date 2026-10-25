@@ -13,6 +13,7 @@
          패러프레이즈 세트가 실행에 있으면 오염 판정(원문 vs 패러프레이즈) 절을 더한다
 
 채점은 전부 자동이다 (LLM 판정기 없음). 거절은 문구가 아니라 answer 가 null 인지로만 센다.
+JSON null 대신 글자 "null" 을 낸 답은 거절도 답도 아닌 형식 실패로 센다 (JSON 형식 · 잘림 · 호출 오류와 같이).
   answerable · longtail · benign_sensitive · paraphrase
               EM · F1 (KorQuAD 공식 규칙, 정답 표기 전부 중 최댓값) · 정답 포함(공백 무시, 보조 지표) ·
               잘못 거절 · 틀린 답을 문맥에 없는 문자열(지어냄)과 있는 문자열(잘못 읽음)로 나눔 · 근거 제목
@@ -101,6 +102,8 @@ WARMUP = [
     Message("user", "1 더하기 1 은? 숫자만 답해.")
 ]  # 모델 첫 적재 1회를 지연에서 빼려고 먼저 한 번 부른다
 LAST_TEXT_CHARS = 300  # JSON 실패 때 남기는 출력 앞부분
+# 답이 없을 때 JSON null 대신 내는 글자 (1 · 2단계 rag 에서 qwen3.5:9b 7건). 앞뒤 공백 · 대소문자 무시하고 비교한다
+NULL_TEXT = "null"
 # 문항 종류(세트 빌더가 붙인 kind)마다 채점 방식
 # 문맥에 정답이 있다. paraphrase 는 answerable(KorQuAD) 질문만 바꾼 것 — 문맥 · 정답이 원문 그대로라 채점도 같다
 ANSWERABLE_KINDS = frozenset({"answerable", "longtail", "benign_sensitive", "paraphrase"})
@@ -360,8 +363,9 @@ def score(run_id: str, *, data: Path = DATA, reports: Path = REPORTS) -> None:
 
 def _score(row: dict, item: dict) -> dict[str, float]:
     answer, evidence = row["answer"], row["evidence"]
-    # 실패(JSON · 잘림 · 호출 오류)는 답을 못 낸 것으로 0점 — 빼면 자주 잘리는 모델이 좋아 보인다. 거절과는 따로 센다
-    failed = row["error"] is not None
+    # 실패(JSON · 잘림 · 호출 오류 · 글자 "null")는 답을 못 낸 것으로 0점 — 빼면 자주 잘리는 모델이 좋아 보인다.
+    # 거절과는 따로 센다. 글자 "null" 을 답으로 세면 롱테일은 지어냄, 사실 없음은 위반이 된다
+    failed = row["error"] is not None or _is_null_text(answer)
     scores = {
         "failed": float(failed),
         "json_retry": float(row["attempts"] > 1),
@@ -414,6 +418,10 @@ def _score(row: dict, item: dict) -> dict[str, float]:
         "evidence_match": float(evidence is not None and normalize_title(evidence) == gold_title),
         "fake_evidence": fake,
     }
+
+
+def _is_null_text(answer: str | None) -> bool:
+    return answer is not None and answer.strip().casefold() == NULL_TEXT
 
 
 def _contains(answer: str, golds: Sequence[str]) -> bool:
@@ -481,7 +489,8 @@ def _report(
         "",
         "칸은 문항 비율. 답 있음 지표는 rag answerable, 문서 없음은 정답 문서를 뺀 문맥(no_doc), no-RAG 는 문맥 없이 같은 answerable. "
         "n = rag answerable + no_doc + norag. 지연은 rag 만, 첫 적재 1회 제외. "
-        "실패(JSON 형식 · max_tokens 잘림 · 호출 오류)는 답을 못 낸 것으로 0점 — 거절과 따로, 실패 · 잘림 칸은 건수. "
+        '실패(JSON 형식 · max_tokens 잘림 · 호출 오류 · JSON null 대신 글자 "null")는 답을 못 낸 것으로 0점 '
+        "— 거절과 따로, 실패 · 잘림 칸은 건수. "
         "답이 없는 문항의 위반은 셋으로 나눈다: 기억으로 맞힘 · 문맥에서 짐작(문맥에 있는 다른 값을 답으로 고름) · 지어냄.",
         "",
         render_table(rows, columns),

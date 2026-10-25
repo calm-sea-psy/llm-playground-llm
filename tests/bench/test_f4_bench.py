@@ -3,6 +3,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 from playground_llm import ModelSpec, Think
 
 RUN_ID = "r1"
@@ -292,6 +294,44 @@ def test_score_records_paraphrase_scores_like_answerable(f4_bench: ModuleType, t
     assert paraphrase["scores"]["em"] == 1.0
     assert paraphrase["scores"]["f1"] == 1.0
     assert paraphrase["scores"]["contains"] == 1.0
+
+
+@pytest.mark.parametrize("answer", ["null", " NULL ", "Null"])
+def test_score_counts_null_text_as_failure_on_longtail(f4_bench: ModuleType, answer: str):
+    item = _item("longtail:0", "longtail")
+    row = {**_output("m", "rag", "longtail:0", "longtail", correct=True), "answer": answer}
+
+    scores = f4_bench._score(row, item)
+
+    assert scores["failed"] == 1.0
+    assert scores["answered"] == 0.0
+    assert scores["refused"] == 0.0  # 거절도 아니다
+    assert scores["fabricated"] == 0.0
+    assert scores["misread"] == 0.0
+    assert scores["f1"] == 0.0
+
+
+@pytest.mark.parametrize("mode", ["rag", "norag"])
+def test_score_counts_null_text_as_failure_on_no_fact(f4_bench: ModuleType, mode: str):
+    item = _item("no_fact:0", "no_fact", answers=["부산"])
+    row = {**_output("m", mode, "no_fact:0", "no_fact", correct=True), "answer": "null"}
+
+    scores = f4_bench._score(row, item)
+
+    assert scores["failed"] == 1.0
+    assert scores["answered"] == 0.0  # 사실 없음 위반이 아니다
+    assert scores["fabricated"] == 0.0
+    assert scores.get("context_answer", 0.0) == 0.0
+
+
+def test_score_keeps_answers_that_only_contain_null(f4_bench: ModuleType):
+    item = _item("longtail:0", "longtail")
+    row = {**_output("m", "rag", "longtail:0", "longtail", correct=True), "answer": "null 값"}
+
+    scores = f4_bench._score(row, item)
+
+    assert scores["failed"] == 0.0
+    assert scores["answered"] == 1.0
 
 
 def _spec(think: Think) -> ModelSpec:
