@@ -12,6 +12,7 @@ from playground_llm import (
     Generation,
     GenerationError,
     GenerationTimeoutError,
+    LLMError,
     Message,
     ModelNotFoundError,
     ModelSpec,
@@ -249,6 +250,11 @@ def test_live_think_off_returns_no_thinking(live: OllamaLLM):
     spec = ModelSpec(
         "ollama", os.environ.get("OLLAMA_TEST_MODEL", "gemma4:12b"), {"temperature": 0}
     )
+    assert issubclass(GenerationTimeoutError, RuntimeError)
+    assert issubclass(GenerationError, RuntimeError)
+    assert issubclass(ModelNotFoundError, LookupError)
+    assert issubclass(GenerationError, LLMError)
+    assert issubclass(ModelNotFoundError, LLMError)
     question = [Message("user", "17 곱하기 23 은? 숫자만 답해.")]
 
     off = live.generate(spec, question)

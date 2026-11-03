@@ -7,11 +7,11 @@ class LLMError(Exception):
     """playground_llm 의 모든 예외."""
 
 
-class ModelNotFoundError(LLMError):
+class ModelNotFoundError(LLMError, LookupError):
     """서버에 그 모델이 없다 (Ollama 에 pull 하지 않은 태그 등)."""
 
 
-class GenerationError(LLMError):
+class GenerationError(LLMError, RuntimeError):
     """서버가 생성에 실패했다 (연결 실패 · 오류 응답 · 형식이 맞지 않는 출력)."""
 
 

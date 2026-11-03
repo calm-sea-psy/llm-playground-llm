@@ -27,12 +27,17 @@ def test_render_rejects_missing_and_unused_values():
 
 
 def test_template_rejects_bad_names_versions_and_placeholders():
-    with pytest.raises(PromptError, match="snake_case"):
+    with pytest.raises(ValueError, match="snake_case"):
         PromptTemplate("Grounded", "v1", "x")
-    with pytest.raises(PromptError, match="v1"):
+    with pytest.raises(ValueError, match="v1"):
         PromptTemplate("grounded", "1", "x")
-    with pytest.raises(PromptError, match=r"\$\$"):
+    with pytest.raises(ValueError, match=r"\$\$"):
         PromptTemplate("grounded", "v1", "가격은 $5")
+
+
+def test_prompt_error_is_not_a_value_error():
+    # 위키의 `except ValueError` (LLM 출력 형식 오류) 가 프롬프트 오류를 삼키면 안 된다
+    assert not issubclass(PromptError, ValueError)
 
 
 def test_dollar_sign_is_written_as_double_dollar():
@@ -87,6 +92,15 @@ def test_library_rejects_missing_directory_and_bad_file_names(tmp_path: Path):
     (tmp_path / "base").mkdir()
     (tmp_path / "base" / "latest.md").write_text("x", encoding="utf-8")
     with pytest.raises(PromptError, match="v1"):
+        PromptLibrary.load(tmp_path)
+
+
+def test_library_reports_bad_placeholder_with_file_path(tmp_path: Path):
+    (tmp_path / "base").mkdir()
+    path = tmp_path / "base" / "v1.md"
+    path.write_text("가격은 $5", encoding="utf-8")
+
+    with pytest.raises(PromptError, match=r"v1\.md.*\$\$"):
         PromptLibrary.load(tmp_path)
 
 
