@@ -11,6 +11,7 @@ from playground_evalkit.metrics import percentile
 CONFIDENCE = 0.95  # 리포트에 적는 기본 신뢰 수준
 # 백분위 bootstrap 으로 95% 구간 끝(2.5 · 97.5 백분위)을 낼 때 흔히 권하는 반복 수
 BOOTSTRAP_RESAMPLES = 2000
+BOOTSTRAP_SEED = 0  # 값 자체에 뜻은 없다 — 같은 입력이면 리포트 구간이 그대로 나오게 고정한다
 
 
 @dataclass(frozen=True)
@@ -95,7 +96,7 @@ def paired_bootstrap(
     *,
     resamples: int = BOOTSTRAP_RESAMPLES,
     confidence: float = CONFIDENCE,
-    seed: int = 0,
+    seed: int = BOOTSTRAP_SEED,
 ) -> PairedBootstrap:
     """문항마다 짝지은 점수 a · b 의 평균 차이(a − b)와 bootstrap 백분위 구간을 돌려준다.
 
