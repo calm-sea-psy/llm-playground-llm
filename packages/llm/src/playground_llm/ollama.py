@@ -286,7 +286,9 @@ def _message(body: Mapping[str, object], spec: ModelSpec) -> Mapping[str, object
 
 
 def _text_field(message: Mapping[str, object], key: str, spec: ModelSpec) -> str:
-    value = message.get(key, "")
+    value = message.get(key)
+    if value is None:  # 없는 것과 같다 — 스트림의 조각이 null 이어도 답을 끊지 않는다
+        return ""
     if not isinstance(value, str):
         raise GenerationError(f"{spec.name}: {key} must be a string, got {type(value).__name__}")
     return value

@@ -204,11 +204,10 @@ def test_missing_model_raises_model_not_found():
     [
         ["not", "an", "object"],
         {"message": "not an object"},
-        {"message": {"content": None}},
         {"message": {"content": 391}},
         {"message": {"content": "391", "thinking": 1}},
     ],
-    ids=["body-list", "message-str", "content-null", "content-int", "thinking-int"],
+    ids=["body-list", "message-str", "content-int", "thinking-int"],
 )
 def test_malformed_response_raises_generation_error(body: object):
     payload = json.dumps(body).encode()
@@ -219,6 +218,21 @@ def test_malformed_response_raises_generation_error(body: object):
         generate_llm.generate(SPEC, MESSAGES)
     with pytest.raises(GenerationError):
         list(stream_llm.stream(SPEC, MESSAGES))
+
+
+def test_null_text_fields_count_as_absent():
+    body = {"message": {"content": None, "thinking": None}}
+    generate_llm, _ = _llm(lambda _: httpx.Response(200, json=body))
+    stream_body = b'{"message": {"content": null}}\n{"message": {"content": "391"}, "done": true}\n'
+    stream_llm, _ = _llm(lambda _: httpx.Response(200, content=stream_body))
+
+    generation = generate_llm.generate(SPEC, MESSAGES)
+    final = list(stream_llm.stream(SPEC, MESSAGES))[-1]
+
+    assert generation.text == ""
+    assert generation.thinking is None
+    assert isinstance(final, Generation)
+    assert final.text == "391"
 
 
 def test_generate_without_message_gives_empty_text():
