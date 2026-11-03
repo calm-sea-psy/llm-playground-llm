@@ -1,12 +1,6 @@
-"""평가 지표(검색 · 답변 EM/F1 · 거부) · 벤치 비교 통계 · KorQuAD 로더와 정답 매칭 · 결과 기록 · 리포트. 다른 패키지에 의존하지 않는다."""
+"""평가 지표(검색 · 답변 EM/F1) · 벤치 비교 통계 · KorQuAD 로더와 정답 매칭 · 결과 기록 · 리포트. 다른 패키지에 의존하지 않는다."""
 
-from playground_evalkit.answers import (
-    RefusalScores,
-    exact_match,
-    f1,
-    normalize_answer,
-    refusal_scores,
-)
+from playground_evalkit.answers import exact_match, f1, normalize_answer
 from playground_evalkit.korquad import KorQuADItem, contains_answer, korquad_title, load_korquad
 from playground_evalkit.metrics import hit_at_k, mrr, percentile, reciprocal_rank
 from playground_evalkit.normalize import normalize_title, squash
@@ -25,7 +19,6 @@ __all__ = [
     "McNemarResult",
     "PairedBootstrap",
     "ParamValue",
-    "RefusalScores",
     "ResultRecord",
     "contains_answer",
     "exact_match",
@@ -41,7 +34,6 @@ __all__ = [
     "percentile",
     "read_records",
     "reciprocal_rank",
-    "refusal_scores",
     "render_table",
     "squash",
     "wilson_interval",
