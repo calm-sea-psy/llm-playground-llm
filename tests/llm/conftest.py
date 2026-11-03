@@ -7,12 +7,15 @@ import pytest
 from playground_llm.ollama import OllamaConfig, OllamaLLM
 
 DEFAULT_LIVE_MODEL = "gemma4:12b"
+LIVE_ENV = "LLM_LIVE_TESTS"
 RAW_QUESTION = [{"role": "user", "content": "What is 17 times 23? Answer with the number only."}]
 
 
 @pytest.fixture
 def server() -> Iterator[OllamaLLM]:
-    """실제 Ollama (모델은 테스트마다 확인). 떠 있지 않으면 건너뛴다."""
+    """실제 Ollama (모델은 테스트마다 확인). LIVE_ENV 를 켜지 않았거나 떠 있지 않으면 건너뛴다."""
+    if os.environ.get(LIVE_ENV) != "1":
+        pytest.skip(f"live 테스트는 GPU 를 쓴다 — {LIVE_ENV}=1 로 켠다")
     with OllamaLLM.connect(OllamaConfig.from_env()) as llm:
         try:
             llm._client.get("/api/tags")
