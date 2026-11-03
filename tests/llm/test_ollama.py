@@ -125,7 +125,6 @@ def test_generate_splits_thinking_and_text_and_reads_usage():
     usage = generation.usage
     assert (usage.prompt_tokens, usage.completion_tokens, usage.cached_prompt_tokens) == (27, 4, 25)
     assert (usage.load_ms, usage.prompt_eval_ms, usage.eval_ms) == (6, 82, 111)
-    assert usage.thinking_tokens is None
     assert usage.total_ms >= 0
 
 

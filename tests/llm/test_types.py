@@ -80,7 +80,6 @@ def test_generation_history_message_drops_thinking():
     )
 
     assert generation.as_message() == Message("assistant", "서울")
-    assert generation.usage.thinking_tokens is None  # Ollama 는 따로 주지 않는다
 
 
 def test_spec_params_fit_evalkit_result_record():

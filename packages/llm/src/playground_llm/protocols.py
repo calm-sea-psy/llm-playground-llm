@@ -1,4 +1,4 @@
-"""LLM 클라이언트 계약. 서버마다 구현체(OllamaLLM · OpenAICompatLLM · FakeLLM)를 둔다."""
+"""LLM 클라이언트 계약. 서버마다 구현체를 둔다 (지금은 OllamaLLM · 테스트용 FakeLLM)."""
 
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Protocol
