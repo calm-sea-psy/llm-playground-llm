@@ -1,9 +1,9 @@
 """OllamaLLM 테스트. 단위 테스트는 httpx.MockTransport, 마지막 하나는 실제 Ollama (없으면 건너뜀)."""
 
 import json
-import os
 import subprocess
 import sys
+from collections.abc import Callable
 
 import httpx
 import pytest
@@ -12,6 +12,7 @@ from playground_llm import (
     Generation,
     GenerationError,
     GenerationTimeoutError,
+    LLMError,
     Message,
     ModelNotFoundError,
     ModelSpec,
@@ -125,7 +126,6 @@ def test_generate_splits_thinking_and_text_and_reads_usage():
     usage = generation.usage
     assert (usage.prompt_tokens, usage.completion_tokens, usage.cached_prompt_tokens) == (27, 4, 25)
     assert (usage.load_ms, usage.prompt_eval_ms, usage.eval_ms) == (6, 82, 111)
-    assert usage.thinking_tokens is None
     assert usage.total_ms >= 0
 
 
@@ -199,6 +199,55 @@ def test_missing_model_raises_model_not_found():
         list(llm.stream(SPEC, MESSAGES))
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        ["not", "an", "object"],
+        {"message": "not an object"},
+        {"message": {"content": 391}},
+        {"message": {"content": "391", "thinking": 1}},
+    ],
+    ids=["body-list", "message-str", "content-int", "thinking-int"],
+)
+def test_malformed_response_raises_generation_error(body: object):
+    payload = json.dumps(body).encode()
+    generate_llm, _ = _llm(lambda _: httpx.Response(200, json=body))
+    stream_llm, _ = _llm(lambda _: httpx.Response(200, content=payload))
+
+    with pytest.raises(GenerationError):
+        generate_llm.generate(SPEC, MESSAGES)
+    with pytest.raises(GenerationError):
+        list(stream_llm.stream(SPEC, MESSAGES))
+
+
+def test_null_text_fields_count_as_absent():
+    body = {"message": {"content": None, "thinking": None}}
+    generate_llm, _ = _llm(lambda _: httpx.Response(200, json=body))
+    stream_body = b'{"message": {"content": null}}\n{"message": {"content": "391"}, "done": true}\n'
+    stream_llm, _ = _llm(lambda _: httpx.Response(200, content=stream_body))
+
+    generation = generate_llm.generate(SPEC, MESSAGES)
+    final = list(stream_llm.stream(SPEC, MESSAGES))[-1]
+
+    assert generation.text == ""
+    assert generation.thinking is None
+    assert isinstance(final, Generation)
+    assert final.text == "391"
+
+
+def test_generate_without_message_gives_empty_text():
+    llm, _ = _llm(lambda _: httpx.Response(200, json=FINAL))
+
+    assert llm.generate(SPEC, MESSAGES).text == ""
+
+
+def test_error_response_with_non_object_json_keeps_body_as_detail():
+    llm, _ = _llm(lambda _: httpx.Response(500, json=["boom"]))
+
+    with pytest.raises(GenerationError, match="boom"):
+        llm.generate(SPEC, MESSAGES)
+
+
 def test_server_error_and_timeout_map_to_generation_errors():
     failing, _ = _llm(lambda _: httpx.Response(500, json={"error": "out of memory"}))
 
@@ -211,7 +260,15 @@ def test_server_error_and_timeout_map_to_generation_errors():
         failing.generate(SPEC, MESSAGES)
     with pytest.raises(GenerationTimeoutError):
         slow.generate(SPEC, MESSAGES)
+
+
+def test_errors_also_inherit_builtin_exceptions():
     assert issubclass(GenerationTimeoutError, TimeoutError)
+    assert issubclass(GenerationTimeoutError, RuntimeError)
+    assert issubclass(GenerationError, RuntimeError)
+    assert issubclass(ModelNotFoundError, LookupError)
+    assert issubclass(GenerationError, LLMError)
+    assert issubclass(ModelNotFoundError, LLMError)
 
 
 def test_config_from_env_accepts_host_without_scheme(monkeypatch: pytest.MonkeyPatch):
@@ -232,24 +289,8 @@ def test_package_root_does_not_import_extras():
     assert result.stdout.strip() == "False"
 
 
-@pytest.fixture
-def live() -> OllamaLLM:
-    """실제 Ollama. 떠 있지 않거나 모델이 없으면 건너뛴다 (OLLAMA_TEST_MODEL, 기본 gemma4:12b)."""
-    llm = OllamaLLM.connect(OllamaConfig.from_env())
-    model = os.environ.get("OLLAMA_TEST_MODEL", "gemma4:12b")
-    try:
-        names = {m["name"] for m in llm._client.get("/api/tags").json()["models"]}
-    except httpx.HTTPError:
-        pytest.skip("Ollama 가 떠 있지 않음")
-    if model not in names:
-        pytest.skip(f"{model} 이 Ollama 에 없음")
-    return llm
-
-
-def test_live_think_off_returns_no_thinking(live: OllamaLLM):
-    spec = ModelSpec(
-        "ollama", os.environ.get("OLLAMA_TEST_MODEL", "gemma4:12b"), {"temperature": 0}
-    )
+def test_live_think_off_returns_no_thinking(live: OllamaLLM, live_model: str):
+    spec = ModelSpec("ollama", live_model, {"temperature": 0})
     question = [Message("user", "17 곱하기 23 은? 숫자만 답해.")]
 
     off = live.generate(spec, question)
@@ -265,12 +306,10 @@ def test_live_think_off_returns_no_thinking(live: OllamaLLM):
     assert final.usage.completion_tokens > off.usage.completion_tokens
 
 
-def test_live_done_reason_is_length_when_max_tokens_cuts_the_answer(live: OllamaLLM):
-    spec = ModelSpec(
-        "ollama",
-        os.environ.get("OLLAMA_TEST_MODEL", "gemma4:12b"),
-        {"temperature": 0, "max_tokens": 8},
-    )
+def test_live_done_reason_is_length_when_max_tokens_cuts_the_answer(
+    live: OllamaLLM, live_model: str
+):
+    spec = ModelSpec("ollama", live_model, {"temperature": 0, "max_tokens": 8})
     question = [Message("user", "조선의 왕 27명을 순서대로 모두 설명해 줘.")]
 
     cut = live.generate(spec, question)
@@ -284,62 +323,35 @@ def test_live_done_reason_is_length_when_max_tokens_cuts_the_answer(live: Ollama
 
 # 아래 test_live_rule_* 는 THINK_RULES 의 근거가 지금 서버에서도 맞는지 본다.
 # 깨지면 Ollama 동작이 바뀐 것 — 규칙표와 THINK_RULES_OLLAMA_VERSION 을 다시 잰다
-RAW_QUESTION = [{"role": "user", "content": "What is 17 times 23? Answer with the number only."}]
-
-
-@pytest.fixture
-def server() -> OllamaLLM:
-    """실제 Ollama (모델은 테스트마다 확인). 떠 있지 않으면 건너뛴다."""
-    llm = OllamaLLM.connect(OllamaConfig.from_env())
-    try:
-        llm._client.get("/api/tags")
-    except httpx.HTTPError:
-        pytest.skip("Ollama 가 떠 있지 않음")
-    return llm
-
-
-def _require(server: OllamaLLM, model: str) -> None:
-    names = {m["name"] for m in server._client.get("/api/tags").json()["models"]}
-    if not {model, f"{model}:latest"} & names:  # 태그를 빼면 Ollama 는 :latest 로 받는다
-        pytest.skip(f"{model} 이 Ollama 에 없음")
-
-
-def _raw_thinking(server: OllamaLLM, model: str, think: bool | str) -> str:
-    """규칙표를 거치지 않고 think 값을 그대로 보내 받은 thinking. 없으면 빈 문자열."""
-    _require(server, model)
-    body = {
-        "model": model,
-        "messages": RAW_QUESTION,
-        "stream": False,
-        "think": think,
-        "options": {"temperature": 0, "seed": 1},
-    }
-    response = server._client.post("/api/chat", json=body)
-    response.raise_for_status()
-    return response.json()["message"].get("thinking", "")
-
-
-def test_live_rule_gpt_oss_false_still_thinks_and_true_equals_medium(server: OllamaLLM):
+def test_live_rule_gpt_oss_false_still_thinks_and_true_equals_medium(
+    raw_thinking: Callable[[str, bool | str], str],
+):
     model = "gpt-oss:20b"
 
-    assert _raw_thinking(server, model, False)  # → OFF 거부
-    assert _raw_thinking(server, model, True) == _raw_thinking(server, model, "medium")  # → ON 거부
+    assert raw_thinking(model, False)  # → OFF 거부
+    assert raw_thinking(model, True) == raw_thinking(model, "medium")  # → ON 거부
 
 
-def test_live_rule_gemma4_e4b_never_returns_thinking(server: OllamaLLM):
-    assert _raw_thinking(server, "gemma4:e4b", True) == ""  # → ON 거부
+def test_live_rule_gemma4_e4b_never_returns_thinking(
+    raw_thinking: Callable[[str, bool | str], str],
+):
+    assert raw_thinking("gemma4:e4b", True) == ""  # → ON 거부
 
 
-def test_live_rule_levels_are_ignored_on_unlisted_models(server: OllamaLLM):
-    on = _raw_thinking(server, "gemma4:12b", True)
+def test_live_rule_levels_are_ignored_on_unlisted_models(
+    raw_thinking: Callable[[str, bool | str], str],
+):
+    on = raw_thinking("gemma4:12b", True)
 
     assert on
-    assert _raw_thinking(server, "gemma4:12b", "low") == on  # → 기본 규칙은 OFF · ON 만
+    assert raw_thinking("gemma4:12b", "low") == on  # → 기본 규칙은 OFF · ON 만
 
 
-def test_live_server_rejects_think_on_for_model_without_thinking(server: OllamaLLM):
+def test_live_server_rejects_think_on_for_model_without_thinking(
+    server: OllamaLLM, require_model: Callable[[str], None]
+):
     # 표에 없는 모델도 thinking 이 없으면 서버가 400 으로 막는다 → 기본 규칙이 ON 을 서버에 맡겨도 된다
-    _require(server, "phi4-mini")
+    require_model("phi4-mini")
     spec = ModelSpec("ollama", "phi4-mini", {"think": Think.ON})
 
     with pytest.raises(GenerationError, match="does not support thinking"):

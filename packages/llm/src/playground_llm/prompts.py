@@ -22,7 +22,11 @@ _NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 class PromptError(LLMError):
-    """프롬프트를 찾을 수 없거나 값을 채울 수 없다."""
+    """프롬프트를 찾을 수 없거나 값을 채울 수 없다.
+
+    ValueError 를 같이 상속하지 않는다 — 위키가 LLM 출력 형식 오류를 `except ValueError` 로 잡으므로
+    (query_rewrite · judge_check) 상속하면 프롬프트 오류까지 형식 오류로 삼켜진다.
+    """
 
 
 @dataclass(frozen=True)
@@ -42,11 +46,11 @@ class PromptTemplate:
 
     def __post_init__(self) -> None:
         if not _NAME.match(self.name):
-            raise PromptError(f"name must be snake_case, got {self.name=}")
+            raise ValueError(f"name must be snake_case, got {self.name=}")
         if not _VERSION.match(self.version):
-            raise PromptError(f"version must look like v1, got {self.version=}")
+            raise ValueError(f"version must look like v1, got {self.version=}")
         if not Template(self.text).is_valid():  # `$` 뒤 숫자 · 공백 등 — 만들 때 바로 알린다
-            raise PromptError(f"{self.ref}: invalid placeholder (write a literal $ as $$)")
+            raise ValueError(f"{self.ref}: invalid placeholder (write a literal $ as $$)")
 
     @property
     def ref(self) -> str:
@@ -118,23 +122,17 @@ class PromptLibrary:
             by_ref[template.ref] = template
         self._by_ref = by_ref
 
+    # 컨벤션의 load() 는 인스턴스 메서드지만, 위키가 PromptLibrary.load(...) 를 여러 곳에서 불러 이름을 그대로 둔다
     @classmethod
     def load(cls, directory: Path) -> Self:
         """`{이름}/{버전}.md` 파일을 모두 읽는다. 끝 줄바꿈은 뗀다.
 
         Raises:
-          PromptError: 폴더가 없거나 이름 · 버전 형식이 틀린 파일이 있을 때.
+          PromptError: 폴더가 없거나 이름 · 버전 · 자리표시자 형식이 틀린 파일이 있을 때.
         """
         if not directory.is_dir():
             raise PromptError(f"prompt directory not found: {directory}")
-        templates = [
-            PromptTemplate(
-                name=path.parent.name,
-                version=path.stem,
-                text=path.read_text(encoding="utf-8").rstrip("\n"),
-            )
-            for path in sorted(directory.glob(f"*/*{PROMPT_SUFFIX}"))
-        ]
+        templates = [_read_template(path) for path in sorted(directory.glob(f"*/*{PROMPT_SUFFIX}"))]
         return cls(templates)
 
     @property
@@ -151,6 +149,15 @@ class PromptLibrary:
         if ref not in self._by_ref:
             raise PromptError(f"unknown prompt {ref!r}, known: {', '.join(self.refs)}")
         return self._by_ref[ref]
+
+
+def _read_template(path: Path) -> PromptTemplate:
+    # 파일은 호출자의 인자가 아니라 바깥 입력이다 — 위키의 `except ValueError` 에 삼켜지지 않게 PromptError 로
+    text = path.read_text(encoding="utf-8").rstrip("\n")
+    try:
+        return PromptTemplate(name=path.parent.name, version=path.stem, text=text)
+    except ValueError as e:
+        raise PromptError(f"{path}: {e}") from e
 
 
 def _check_values(ref: str, needed: frozenset[str], values: Mapping[str, str]) -> None:

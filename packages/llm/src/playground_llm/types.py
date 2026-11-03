@@ -1,4 +1,4 @@
-"""LLM 호출의 입력 · 출력 자료형. 서버 종류(Ollama · vLLM)와 상관없이 같은 모양이다."""
+"""LLM 호출의 입력 · 출력 자료형. 서버 종류와 상관없이 같은 모양이다."""
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -52,7 +52,7 @@ class ModelSpec:
     """
 
     provider: str
-    """서버 종류 (ollama · vllm …). 어느 클라이언트가 받을지는 쓰는 쪽이 정한다."""
+    """서버 종류 (예: `ollama`). 어느 클라이언트가 받을지는 쓰는 쪽이 정한다."""
     name: str
     """서버에서 쓰는 모델 이름 (태그 포함, 예: `gemma4:12b`)."""
     # 해시에서는 뺀다 (매핑은 해시가 안 된다). 같은지 비교에는 들어간다 — 같은 spec 은 해시도 같다
@@ -110,12 +110,10 @@ class Usage:
     """생성 토큰 수. thinking 토큰도 들어 있다 (Ollama eval_count)."""
     total_ms: int
     """클라이언트가 잰 전체 시간 — 항상 있다."""
-    thinking_tokens: int | None = None
-    """completion_tokens 중 thinking 몫. 서버가 따로 줄 때만 (Ollama 는 주지 않는다)."""
     cached_prompt_tokens: int | None = None
     """prompt_tokens 중 캐시로 건너뛴 몫 (Ollama prompt_eval_cached_count). prefix 캐시 효과 측정용."""
     load_ms: int | None = None
-    """모델 적재 시간. 아래 둘과 함께 Ollama 만 준다 (나노초 → ms). vLLM · OpenAI 호환은 None."""
+    """모델 적재 시간. 아래 둘과 함께 Ollama 가 준다 (나노초 → ms). 주지 않는 서버면 None."""
     prompt_eval_ms: int | None = None
     eval_ms: int | None = None
 
@@ -132,8 +130,6 @@ class Generation:
     """thinking 내용. 꺼져 있거나 서버가 주지 않으면 None."""
     done_reason: DoneReason | None = None
     """멈춘 이유. thinking 이 max_tokens 를 다 쓰면 text 가 빈 채 length 다. 서버가 주지 않거나 모르는 값이면 None."""
-    raw_json: str | None = None
-    """서버 응답 원문 JSON. 디버그에 꼭 필요할 때만 채운다."""
 
     def as_message(self) -> Message:
         """히스토리에 넣을 assistant 턴 (thinking 제외)."""

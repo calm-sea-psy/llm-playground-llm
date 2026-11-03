@@ -33,6 +33,8 @@ from playground_llm.types import (
 
 URL = "http://localhost:11434"
 TIMEOUT_SEC = 120.0  # think on 은 thinking 토큰이 수천 개까지 간다. 첫 요청은 모델 적재 시간도 든다
+# 연결은 모델 적재와 상관없이 바로 맺어진다 — 오래 걸리면 서버가 떠 있지 않은 것이니 읽기 제한까지 기다리지 않는다
+CONNECT_TIMEOUT_SEC = 10.0
 # ModelSpec.params 중 options 가 아니라 요청 최상위로 가는 키
 TOP_LEVEL_PARAMS = frozenset({"keep_alive"})
 # 서버와 상관없는 이름 → Ollama options 이름 (프로필 표가 같은 이름을 쓰게)
@@ -152,7 +154,7 @@ class OllamaLLM:
     @classmethod
     def connect(cls, config: OllamaConfig) -> OllamaLLM:
         """HTTP 클라이언트를 만든다. 실제 접속은 첫 요청 때. `with` 로 쓰면 끝날 때 닫는다."""
-        timeout = httpx.Timeout(config.timeout_sec, connect=10.0)
+        timeout = httpx.Timeout(config.timeout_sec, connect=CONNECT_TIMEOUT_SEC)
         return cls(httpx.Client(base_url=config.url, timeout=timeout))
 
     def __enter__(self) -> OllamaLLM:
@@ -184,13 +186,13 @@ class OllamaLLM:
             request = chat_request(spec, messages, stream=False, json_schema=json_schema)
             response = self._client.post("/api/chat", json=request)
             _raise_for_status(response, spec)
-            body = response.json()
-        message = body.get("message") or {}
+            body = _json_object(response.json(), spec)
+        message = _message(body, spec)
         return Generation(
-            text=message.get("content", ""),
+            text=_text_field(message, "content", spec),
             model=spec,
             usage=_usage(body, start),
-            thinking=message.get("thinking") or None,
+            thinking=_text_field(message, "thinking", spec) or None,
             done_reason=_done_reason(body),
         )
 
@@ -215,14 +217,14 @@ class OllamaLLM:
                 for line in response.iter_lines():
                     if not line:
                         continue
-                    chunk = json.loads(line)
+                    chunk = _json_object(json.loads(line), spec)
                     if "error" in chunk:  # 스트림 중간에 서버가 실패를 알린다
                         raise GenerationError(f"{spec.name}: {chunk['error']}")
-                    message = chunk.get("message") or {}
-                    if piece := message.get("thinking"):
+                    message = _message(chunk, spec)
+                    if piece := _text_field(message, "thinking", spec):
                         thinking.append(piece)
                         yield StreamDelta("thinking", piece)
-                    if piece := message.get("content"):
+                    if piece := _text_field(message, "content", spec):
                         text.append(piece)
                         yield StreamDelta("text", piece)
                     if chunk.get("done"):
@@ -271,6 +273,27 @@ def _json_value(value: ParamValue) -> object:
     return list(value) if isinstance(value, tuple) else value  # Ollama stop 은 JSON 배열
 
 
+def _json_object(value: object, spec: ModelSpec) -> Mapping[str, object]:
+    # 응답 모양이 다르면 AttributeError 로 새지 않고 쓰는 쪽이 잡는 GenerationError 가 되게
+    if not isinstance(value, dict):
+        raise GenerationError(f"{spec.name}: expected a JSON object, got {type(value).__name__}")
+    return value
+
+
+def _message(body: Mapping[str, object], spec: ModelSpec) -> Mapping[str, object]:
+    message = body.get("message")
+    return _json_object(message, spec) if message else {}  # 마지막 조각은 message 가 없을 수 있다
+
+
+def _text_field(message: Mapping[str, object], key: str, spec: ModelSpec) -> str:
+    value = message.get(key)
+    if value is None:  # 없는 것과 같다 — 스트림의 조각이 null 이어도 답을 끊지 않는다
+        return ""
+    if not isinstance(value, str):
+        raise GenerationError(f"{spec.name}: {key} must be a string, got {type(value).__name__}")
+    return value
+
+
 def _usage(body: Mapping[str, object], start: float) -> Usage:
     def ms(key: str) -> int | None:
         value = body.get(key)
@@ -302,9 +325,10 @@ def _raise_for_status(response: httpx.Response, spec: ModelSpec) -> None:
     if not response.is_error:
         return
     try:
-        detail = str(response.json().get("error", response.text))
+        body = response.json()
     except ValueError:
-        detail = response.text
+        body = None
+    detail = str(body.get("error", response.text)) if isinstance(body, dict) else response.text
     if response.status_code == httpx.codes.NOT_FOUND and "not found" in detail:
         raise ModelNotFoundError(f"{spec.name}: {detail}")
     raise GenerationError(f"{spec.name}: HTTP {response.status_code} {detail}")

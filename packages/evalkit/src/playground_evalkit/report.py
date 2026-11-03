@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping, Sequence
 
-DECIMALS = 3
+DECIMALS = 3  # 0~1 지표를 0.1%p 단위까지 — 그보다 작은 차이는 문항 수가 수백 건이면 뜻이 없다
 
 
 def render_table(rows: Sequence[Mapping[str, str | int | float]], columns: Sequence[str]) -> str:

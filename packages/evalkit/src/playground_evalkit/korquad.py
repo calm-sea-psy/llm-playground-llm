@@ -14,7 +14,7 @@ KORQUAD_COLON = "__"  # KorQuAD 제목은 쌍점을 밑줄 두 개로 적는다 
 class KorQuADItem:
     """KorQuAD 질문 하나."""
 
-    id: str
+    id: str  # 내장 id 를 가리지만 공개 필드 이름이라 그대로 둔다 — 위키 스크립트가 id= · .id 로 쓴다
     """KorQuAD 질문 id."""
     title: str
     """정규화하고 title_aliases 로 보정한 문서 제목 — 코퍼스 문서 제목과 비교하는 값."""
