@@ -199,6 +199,41 @@ def test_missing_model_raises_model_not_found():
         list(llm.stream(SPEC, MESSAGES))
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        ["not", "an", "object"],
+        {"message": "not an object"},
+        {"message": {"content": None}},
+        {"message": {"content": 391}},
+        {"message": {"content": "391", "thinking": 1}},
+    ],
+    ids=["body-list", "message-str", "content-null", "content-int", "thinking-int"],
+)
+def test_malformed_response_raises_generation_error(body: object):
+    payload = json.dumps(body).encode()
+    generate_llm, _ = _llm(lambda _: httpx.Response(200, json=body))
+    stream_llm, _ = _llm(lambda _: httpx.Response(200, content=payload))
+
+    with pytest.raises(GenerationError):
+        generate_llm.generate(SPEC, MESSAGES)
+    with pytest.raises(GenerationError):
+        list(stream_llm.stream(SPEC, MESSAGES))
+
+
+def test_generate_without_message_gives_empty_text():
+    llm, _ = _llm(lambda _: httpx.Response(200, json=FINAL))
+
+    assert llm.generate(SPEC, MESSAGES).text == ""
+
+
+def test_error_response_with_non_object_json_keeps_body_as_detail():
+    llm, _ = _llm(lambda _: httpx.Response(500, json=["boom"]))
+
+    with pytest.raises(GenerationError, match="boom"):
+        llm.generate(SPEC, MESSAGES)
+
+
 def test_server_error_and_timeout_map_to_generation_errors():
     failing, _ = _llm(lambda _: httpx.Response(500, json={"error": "out of memory"}))
 
