@@ -1,7 +1,3 @@
-import json
-import os
-
-import httpx
 import pytest
 from pydantic import BaseModel, Field
 
@@ -14,7 +10,7 @@ from playground_llm import (
     Think,
     Usage,
 )
-from playground_llm.ollama import OllamaConfig, OllamaLLM
+from playground_llm.ollama import OllamaLLM
 from playground_llm.structured import generate_json
 
 SPEC = ModelSpec("fake", "m")
@@ -105,19 +101,11 @@ def test_thinking_is_kept_apart_from_parsed_text():
     assert result.value.answer == "한양"
 
 
-def test_live_ollama_follows_schema():
-    model = os.environ.get("OLLAMA_TEST_MODEL", "gemma4:12b")
-    llm = OllamaLLM.connect(OllamaConfig.from_env())
-    try:
-        names = {m["name"] for m in json.loads(llm._client.get("/api/tags").text)["models"]}
-    except httpx.HTTPError:
-        pytest.skip("Ollama 가 떠 있지 않음")
-    if model not in names:
-        pytest.skip(f"{model} 이 Ollama 에 없음")
-    spec = ModelSpec("ollama", model, {"temperature": 0})
+def test_live_ollama_follows_schema(live: OllamaLLM, live_model: str):
+    spec = ModelSpec("ollama", live_model, {"temperature": 0})
     question = [Message("user", "조선의 첫 수도는? answer 에 지명만, confidence 는 0~1.")]
 
-    result = generate_json(llm, spec, question, Answer, retries=0)
+    result = generate_json(live, spec, question, Answer, retries=0)
 
     assert result.attempts == 1
     assert result.value.answer
