@@ -5,7 +5,7 @@ from types import ModuleType
 
 import pytest
 
-from playground_llm import ModelSpec, Think
+from playground_llm import FakeLLM, GenerationError, Message, ModelSpec, PromptLibrary, Think
 
 RUN_ID = "r1"
 ORIGINAL_SET = "korquad-mini"
@@ -85,6 +85,7 @@ def _score(
     paraphrase_set: bool = True,
     extra_items: Sequence[dict] = (),
     pair: Sequence[str] | None = None,
+    stage: str | None = None,
 ) -> str:
     """합성 세트 · 출력으로 score 를 돌리고 리포트 글을 돌려준다."""
     data = tmp_path / "data"
@@ -100,7 +101,8 @@ def _score(
     (run_dir / "meta.json").write_text(json.dumps({"sets": list(sets)}), encoding="utf-8")
     _write_jsonl(run_dir / "outputs.jsonl", outputs)
     reports = tmp_path / "reports"
-    f4_bench.score(RUN_ID, data=data, reports=reports, pair=pair)
+    stage = stage or f4_bench.DEFAULT_STAGE
+    f4_bench.score(RUN_ID, data=data, reports=reports, pair=pair, stage=stage)
     return (reports / f"{RUN_ID}.md").read_text(encoding="utf-8")
 
 
@@ -307,10 +309,10 @@ def test_score_records_paraphrase_scores_like_answerable(f4_bench: ModuleType, t
 
 @pytest.mark.parametrize("answer", ["null", " NULL ", "Null"])
 def test_score_counts_null_text_as_failure_on_longtail(f4_bench: ModuleType, answer: str):
-    item = _item("longtail:0", "longtail")
+    item = f4_bench.BenchItem.from_json(_item("longtail:0", "longtail"))
     row = {**_output("m", "rag", "longtail:0", "longtail", correct=True), "answer": answer}
 
-    scores = f4_bench._score(row, item)
+    scores = f4_bench._score(f4_bench.OutputRow.from_json(row), item)
 
     assert scores["failed"] == 1.0
     assert scores["answered"] == 0.0
@@ -322,10 +324,10 @@ def test_score_counts_null_text_as_failure_on_longtail(f4_bench: ModuleType, ans
 
 @pytest.mark.parametrize("mode", ["rag", "norag"])
 def test_score_counts_null_text_as_failure_on_no_fact(f4_bench: ModuleType, mode: str):
-    item = _item("no_fact:0", "no_fact", answers=["부산"])
+    item = f4_bench.BenchItem.from_json(_item("no_fact:0", "no_fact", answers=["부산"]))
     row = {**_output("m", mode, "no_fact:0", "no_fact", correct=True), "answer": "null"}
 
-    scores = f4_bench._score(row, item)
+    scores = f4_bench._score(f4_bench.OutputRow.from_json(row), item)
 
     assert scores["failed"] == 1.0
     assert scores["answered"] == 0.0  # 사실 없음 위반이 아니다
@@ -334,13 +336,114 @@ def test_score_counts_null_text_as_failure_on_no_fact(f4_bench: ModuleType, mode
 
 
 def test_score_keeps_answers_that_only_contain_null(f4_bench: ModuleType):
-    item = _item("longtail:0", "longtail")
+    item = f4_bench.BenchItem.from_json(_item("longtail:0", "longtail"))
     row = {**_output("m", "rag", "longtail:0", "longtail", correct=True), "answer": "null 값"}
 
-    scores = f4_bench._score(row, item)
+    scores = f4_bench._score(f4_bench.OutputRow.from_json(row), item)
 
     assert scores["failed"] == 0.0
     assert scores["answered"] == 1.0
+
+
+def test_score_rejects_item_kind_outside_definition(f4_bench: ModuleType, tmp_path: Path):
+    outputs = _outputs("memo", norag_original=[True] * COUNT)
+    weird = [_item("weird:0", "weird")]
+
+    with pytest.raises(ValueError, match="unknown item kind 'weird'"):
+        _score(f4_bench, tmp_path, outputs, paraphrase_set=False, extra_items=weird)
+
+
+def test_report_states_settings_from_constants(f4_bench: ModuleType, tmp_path: Path):
+    outputs = _outputs("memo", norag_original=[True] * COUNT)
+
+    report = _score(f4_bench, tmp_path, outputs, paraphrase_set=False)
+
+    assert report.startswith(f"# F4 LLM 벤치 {f4_bench.DEFAULT_STAGE} — {RUN_ID}\n")
+    assert f"상위 {f4_bench.CONTEXT_CHUNKS} 안에" in report
+    assert "f4_rag@v1 · f4_norag@v1" in report
+    assert "temperature 0 · seed 0 · num_ctx 8192" in report
+
+
+def test_report_title_takes_stage_name(f4_bench: ModuleType, tmp_path: Path):
+    outputs = _outputs("memo", norag_original=[True] * COUNT)
+
+    report = _score(f4_bench, tmp_path, outputs, paraphrase_set=False, stage="2단계")
+
+    assert report.startswith(f"# F4 LLM 벤치 2단계 — {RUN_ID}\n")
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"total_ms": 100, "prompt_tokens": 1, "completion_tokens": 2, "done_reason": None}
+        | {"thinking_chars": 0},
+        {"error": "json", "done_reason": None, "last_text": ""},
+        {"error": "generation: boom"},
+    ],
+    ids=["success", "format-failure", "generation-error"],
+)
+def test_output_row_writes_back_the_same_json(f4_bench: ModuleType, extra: dict[str, object]):
+    base = _output("m", "rag", "korquad:0", "answerable", correct=True)
+    for key in ("total_ms", "done_reason"):
+        del base[key]
+    raw = {**base, **extra}
+
+    written = f4_bench.OutputRow.from_json(raw).to_json()
+
+    assert json.dumps(written, ensure_ascii=False) == json.dumps(raw, ensure_ascii=False)
+
+
+def _library() -> PromptLibrary:
+    return PromptLibrary.load(Path(__file__).parents[2] / "bench" / "prompts")
+
+
+def test_ask_sends_context_and_records_answer(f4_bench: ModuleType):
+    llm = FakeLLM(['{"answer": "서울", "evidence": "수도"}'])
+    item = f4_bench.BenchItem.from_json(_item("korquad:0", "answerable"))
+
+    row = f4_bench._ask(llm, _library(), _spec(Think.OFF), "rag", item)
+
+    assert (row.answer, row.evidence, row.attempts, row.error) == ("서울", "수도", 1, None)
+    assert (row.mode, row.item_id, row.kind) == ("rag", "korquad:0", "answerable")
+    assert row.prompt_version.startswith("f4_rag@v1:")
+    assert row.done_reason == "stop"
+    system, user = llm.calls[0].messages
+    assert system.role == "system"
+    assert '<document id="1" title="수도">\n한국의 수도는 서울이다.\n</document>' in user.content
+
+
+def test_ask_without_context_in_norag(f4_bench: ModuleType):
+    llm = FakeLLM(['{"answer": null, "evidence": null}'])
+    item = f4_bench.BenchItem.from_json(_item("korquad:0", "answerable"))
+
+    row = f4_bench._ask(llm, _library(), _spec(Think.OFF), "norag", item)
+
+    assert row.answer is None
+    assert "<document" not in llm.calls[0].messages[1].content
+
+
+def test_ask_records_format_failure(f4_bench: ModuleType):
+    llm = FakeLLM(["형식이 틀린 답"])
+    item = f4_bench.BenchItem.from_json(_item("korquad:0", "answerable"))
+
+    row = f4_bench._ask(llm, _library(), _spec(Think.OFF), "rag", item)
+
+    assert (row.error, row.attempts, row.last_text) == ("json", 2, "형식이 틀린 답")
+    assert row.answer is None
+
+
+def test_ask_records_generation_error(f4_bench: ModuleType):
+    def fail(spec: ModelSpec, messages: Sequence[Message]) -> str:
+        del spec, messages  # FakeLLM 답 함수 시그니처 맞춤
+        raise GenerationError("boom")
+
+    item = f4_bench.BenchItem.from_json(_item("korquad:0", "answerable"))
+
+    row = f4_bench._ask(FakeLLM([fail]), _library(), _spec(Think.OFF), "rag", item)
+
+    assert (row.error, row.attempts, row.last_text) == ("generation: boom", 0, None)
+    assert set(row.to_json()) == set(f4_bench.OutputRow.from_json(row.to_json()).to_json())
+    assert "total_ms" not in row.to_json()
 
 
 def _pair_outputs() -> tuple[list[dict], list[dict]]:
@@ -450,9 +553,10 @@ def _spec(think: Think) -> ModelSpec:
 
 
 def _picked(f4_bench: ModuleType, spec: ModelSpec, *, paraphrase_rag: bool) -> set[tuple]:
-    items = [_item("korquad:0", "answerable"), _paraphrase(0)]
+    raw = [_item("korquad:0", "answerable"), _paraphrase(0)]
+    items = [f4_bench.BenchItem.from_json(item) for item in raw]
     jobs = f4_bench._jobs(spec, items, set(), paraphrase_rag=paraphrase_rag)
-    return {(mode, item["id"]) for mode, item in jobs}
+    return {(mode, item.item_id) for mode, item in jobs}
 
 
 def test_jobs_runs_paraphrase_without_context_by_default(f4_bench: ModuleType):
@@ -482,6 +586,7 @@ def test_jobs_skips_paraphrase_for_spec_without_norag(f4_bench: ModuleType):
 def test_jobs_skips_done(f4_bench: ModuleType):
     spec = _spec(Think.OFF)
     done = {(spec.spec_id, "norag", "paraphrase:0")}
-    jobs = f4_bench._jobs(spec, [_paraphrase(0)], done, paraphrase_rag=True)
+    item = f4_bench.BenchItem.from_json(_paraphrase(0))
+    jobs = f4_bench._jobs(spec, [item], done, paraphrase_rag=True)
 
-    assert [(mode, item["id"]) for mode, item in jobs] == [("rag", "paraphrase:0")]
+    assert [(mode, item.item_id) for mode, item in jobs] == [("rag", "paraphrase:0")]
