@@ -161,7 +161,9 @@ class Answer(BaseModel):
 
 spec = ModelSpec("ollama", "gemma4:12b", {"temperature": 0.1, "max_tokens": 512})
 prompt = compose([PromptTemplate("qa", "v1", "질문: $question")], {"question": "조선의 수도는?"})
-result = generate_json(FakeLLM(['{"answer": "한양"}']), spec, [Message("user", prompt.text)], Answer)
+result = generate_json(
+    FakeLLM(['{"answer": "한양"}']), spec, [Message("user", prompt.text)], Answer
+)
 
 print(prompt.version)  # qa@v1:60197d98 — 평가 기록의 prompt_version
 print(result.value.answer, result.attempts)  # 한양 1
