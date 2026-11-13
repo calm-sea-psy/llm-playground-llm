@@ -140,7 +140,7 @@ with OllamaLLM.connect(OllamaConfig.from_env()) as llm:
 ```toml
 [tool.uv.sources]
 playground-evalkit = { git = "https://github.com/calm-sea-psy/llm-playground-llm", tag = "evalkit-v0.3.0", subdirectory = "packages/evalkit" }
-playground-llm = { git = "https://github.com/calm-sea-psy/llm-playground-llm", tag = "llm-v0.2.0", subdirectory = "packages/llm" }
+playground-llm = { git = "https://github.com/calm-sea-psy/llm-playground-llm", tag = "llm-v0.3.0", subdirectory = "packages/llm" }
 ```
 
 이 레포와 함께 고칠 때는 같은 부모 폴더에 나란히 clone 하고 잠깐 path로 바꿔 씁니다: `{ path = "../llm-playground-llm/packages/evalkit", editable = true }` (`playground-llm`은 `packages/llm`). 0.x 동안은 깨는 변경이 있을 수 있습니다. 태그는 패키지별 접두사(`evalkit-v…` · `llm-v…`)를 씁니다.
