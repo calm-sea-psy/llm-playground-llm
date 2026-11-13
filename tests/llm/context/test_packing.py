@@ -59,7 +59,7 @@ def test_char_counter_follows_the_korean_estimate():
         {"kind": "data", "tag": "d", "max_per_group": 0},
     ],
 )
-def test_slot_rejects_unsafe_or_meaningless_options(options: dict):
+def test_slot_rejects_unsafe_or_meaningless_options(options: dict[str, object]):
     kind = options.pop("kind")
 
     with pytest.raises(ValueError):
