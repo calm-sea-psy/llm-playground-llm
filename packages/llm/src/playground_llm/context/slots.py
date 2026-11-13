@@ -1,4 +1,4 @@
-"""컨텍스트 칸(slot) 정의: 칸 하나의 역할 · 예산 · 우선순위 · 태그, 칸 배치, 칸에 넣을 후보."""
+"""컨텍스트 칸(slot) 정의: 칸 하나의 역할 · 예산 · 우선순위 · 태그, 칸 배치, 칸에 넣을 후보 · 이전 턴."""
 
 import re
 from collections.abc import Mapping
@@ -8,14 +8,19 @@ from typing import Literal, get_args
 
 from playground_llm.types import Role
 
-SlotKind = Literal["instruction", "data"]
-"""instruction 은 우리가 쓴 지시(그대로 넣고 태그로 감싸지 않음), data 는 바깥에서 온 글(태그 안에만)."""
+SlotKind = Literal["instruction", "data", "history"]
+"""instruction 은 우리가 쓴 지시(그대로 넣고 태그로 감싸지 않음), data 는 바깥에서 온 글(태그 안에만),
+history 는 같은 대화의 앞선 질문 · 답(태그 안에만, 턴마다 같은 몫의 예산 — `Turn`)."""
 SLOT_KINDS: tuple[str, ...] = get_args(SlotKind)
 ItemOrder = Literal["score", "given"]
 """칸 안 항목의 배치 순서. score 는 점수 내림차순, given 은 후보를 받은 순서 (뒤에 붙여 나가 앞부분이 그대로)."""
 ITEM_ORDERS: tuple[str, ...] = get_args(ItemOrder)
 NUMBER_ATTRIBUTE = "id"
 """번호 칸(`Slot.numbered`)이 항목 태그에 붙이는 번호 속성. 후보가 직접 쓸 수 없다."""
+USER_TAG = "user"
+"""history 칸의 턴 안에서 사용자 질문을 감싸는 태그."""
+ASSISTANT_TAG = "assistant"
+"""history 칸의 턴 안에서 그때의 답을 감싸는 태그."""
 # 태그 · 속성 이름. 소문자로 시작하는 영문 소문자 · 숫자 · 밑줄만 — 본문 속 흉내를 정규식 하나로 지울 수 있게
 _NAME = re.compile(r"[a-z][a-z0-9_]*")
 
@@ -26,23 +31,25 @@ class Slot:
 
     예)
         Slot("documents", "data", budget=2400, priority=1, item_tag="document", numbered=True)
+        Slot("history", "history", budget=1300, priority=3, tag="history", item_tag="turn")
     """
 
     name: str
     kind: SlotKind
     budget: int
-    """이 칸의 토큰 상한 (태그 포함)."""
+    """이 칸의 토큰 상한 (태그 포함). history 칸은 이력 전용 예산 — 턴마다 같은 몫으로 나눈다."""
     role: Role = "user"
-    """이 칸이 들어갈 턴. data 칸은 user 만 — 데이터는 지시(system) 턴에 섞이지 않는다."""
+    """이 칸이 들어갈 턴. data · history 칸은 user 만 — 데이터는 지시(system) 턴에 섞이지 않는다."""
     priority: int = 0
     """작을수록 먼저 전체 예산을 받는다. 같으면 배치 순서대로."""
     tag: str | None = None
-    """data 칸 전체를 감싸는 태그 (예: `documents`). 없으면 항목 태그만."""
+    """data · history 칸 전체를 감싸는 태그 (예: `documents`). 없으면 항목 태그만."""
     item_tag: str | None = None
-    """data 칸의 항목마다 감싸는 태그 (예: `document`). 없으면 항목을 빈 줄로만 가른다."""
+    """항목마다 감싸는 태그 (예: `document`). data 칸은 없으면 빈 줄로만 가르고, history 칸은 턴마다 꼭 감싼다."""
     numbered: bool = False
     """항목 태그에 `id="1"` 부터 번호를 붙인다 — 답 속 출처 번호 `[n]` 과 같은 번호."""
     order: ItemOrder = "score"
+    """data 칸 안 항목의 배치 순서. history 칸은 보지 않는다 — 늘 대화 순서."""
     max_per_group: int | None = None
     """같은 묶음(`Candidate.group`, 예: 문서 id)에서 넣을 최대 항목 수. None 이면 제한 없음."""
     required: bool = False
@@ -66,8 +73,27 @@ class Slot:
                 raise ValueError(f"{self.name}: tag must match {_NAME.pattern}, got {tag=}")
         if self.kind == "data":
             self._check_data()
+        elif self.kind == "history":
+            self._check_history()
         else:
             self._check_instruction()
+
+    def _check_history(self) -> None:
+        if self.role != "user":
+            raise ValueError(
+                f"{self.name}: history slots must go to the user turn, got {self.role=}"
+            )
+        if self.item_tag is None:
+            raise ValueError(f"{self.name}: history slots need item_tag (one per turn)")
+        if {self.tag, self.item_tag} & {USER_TAG, ASSISTANT_TAG}:
+            raise ValueError(
+                f"{self.name}: {USER_TAG!r} and {ASSISTANT_TAG!r} are used inside turns"
+            )
+        # 이전 답은 근거가 아니다 — 출처 번호를 받지 않는다. 이력이 없는 첫 턴도 있어 필수일 수 없다
+        if self.numbered or self.max_per_group is not None or self.required:
+            raise ValueError(
+                f"{self.name}: history slots take no numbered, max_per_group or required"
+            )
 
     def _check_data(self) -> None:
         if self.role != "user":
@@ -107,16 +133,21 @@ class ContextLayout:
         names = [slot.name for slot in self.slots]
         if len(set(names)) != len(names):
             raise ValueError(f"slot names must be unique, got {names}")
+        history = [slot.name for slot in self.slots if slot.kind == "history"]
+        if len(history) > 1:
+            raise ValueError(f"a layout takes at most one history slot, got {history}")
         for tag in self.reserved_tags:
             if not _NAME.fullmatch(tag):
                 raise ValueError(f"reserved tag must match {_NAME.pattern}, got {tag=}")
 
     @property
     def tags(self) -> frozenset[str]:
-        """본문에서 흉내를 지울 태그 이름 전부 (칸 · 항목 태그 + reserved_tags)."""
+        """본문에서 흉내를 지울 태그 이름 전부 (칸 · 항목 태그 + reserved_tags, history 칸이 있으면 턴 안 태그도)."""
         tags = set(self.reserved_tags)
         for slot in self.slots:
             tags.update(tag for tag in (slot.tag, slot.item_tag) if tag is not None)
+            if slot.kind == "history":
+                tags.update((USER_TAG, ASSISTANT_TAG))
         return frozenset(tags)
 
     def slot(self, name: str) -> Slot:
@@ -157,3 +188,21 @@ class Candidate:
             raise ValueError(f"attribute {NUMBER_ATTRIBUTE!r} is reserved for numbered slots")
         # 만든 쪽이 넘긴 dict 를 나중에 고쳐도 후보가 바뀌지 않게 읽기 전용 복사본으로
         object.__setattr__(self, "attributes", MappingProxyType(dict(self.attributes)))
+
+
+@dataclass(frozen=True)
+class Turn:
+    """history 칸에 넣을 앞선 턴 하나 — 사용자 질문과 그때 보낸 답. 출처 · 검색 문서는 넣지 않는다.
+
+    이전 답은 근거가 아니라 대화 맥락이다 — 사실은 이번 호출의 문서 칸에서만 가져오라고 지시 칸에 적는다.
+
+    예)
+        Turn("그 궁궐은 누가 세웠나?", "어느 궁궐을 말씀하시나요?", clarification=True)
+    """
+
+    question: str
+    """사용자 질문 원문 (기록할 때 개인정보를 가린 값)."""
+    answer: str
+    """그때 사용자에게 보낸 최종 답 (thinking 제외). 몫을 넘으면 조립기가 뒤를 자르고 `…` 를 붙인다."""
+    clarification: bool = False
+    """이 답이 빠진 조건을 되물은 것인지. 다음 질문의 검색어에 이 질문을 붙인다 (`clarification_questions`)."""

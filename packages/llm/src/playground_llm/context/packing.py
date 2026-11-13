@@ -1,4 +1,4 @@
-"""칸 포장: data 칸의 글을 태그로 감싸 지시와 가르고, 본문 속 태그 흉내를 지운다.
+"""칸 포장: data · history 칸의 글을 태그로 감싸 지시와 가르고, 본문 속 태그 흉내를 지운다.
 
 본문의 `</document>` 가 블록을 닫으면 그 뒤 문장이 블록 밖 — 지시처럼 읽힌다 (간접 인젝션).
 그래서 포장에 쓰는 태그 이름은 본문 · 속성 값에서 여는 꼴 · 닫는 꼴 모두 지운다.
@@ -7,7 +7,14 @@
 import re
 from collections.abc import Iterable, Sequence
 
-from playground_llm.context.slots import NUMBER_ATTRIBUTE, Candidate, Slot
+from playground_llm.context.slots import (
+    ASSISTANT_TAG,
+    NUMBER_ATTRIBUTE,
+    USER_TAG,
+    Candidate,
+    Slot,
+    Turn,
+)
 
 ITEM_SEPARATOR = "\n\n"
 """칸 안 항목 사이. 빈 줄 하나."""
@@ -63,9 +70,39 @@ def render_data_slot(
       items: (번호, 후보) — 놓을 순서대로. 번호 칸이 아니면 번호는 None.
       scrubber: 레이아웃의 모든 태그 이름으로 만든 것 (다른 칸의 태그 흉내도 지운다).
     """
-    if not items:
-        return ""
     blocks = [_render_item(slot, number, candidate, scrubber) for number, candidate in items]
+    return _wrap(slot, blocks)
+
+
+def render_history_slot(slot: Slot, turns: Sequence[Turn], scrubber: TagScrubber) -> str:
+    """`history` 칸의 턴들을 태그로 감싼 글을 돌려준다. 턴이 없으면 빈 글.
+
+    Args:
+      slot: 포장할 history 칸.
+      turns: 넣을 턴, 대화 순서대로 (몫에 맞춰 자른 답 그대로).
+      scrubber: 레이아웃의 모든 태그 이름으로 만든 것 (턴 안 태그 흉내도 지운다).
+    """
+    return _wrap(slot, [render_turn(slot, turn, scrubber) for turn in turns])
+
+
+def render_turn(slot: Slot, turn: Turn, scrubber: TagScrubber) -> str:
+    """턴 하나를 `<turn><user>질문</user><assistant>답</assistant></turn>` 꼴(줄바꿈 포함)로 돌려준다."""
+    question = f"<{USER_TAG}>{scrubber.scrub(turn.question)}</{USER_TAG}>"
+    answer = f"<{ASSISTANT_TAG}>{scrubber.scrub(turn.answer)}</{ASSISTANT_TAG}>"
+    return f"<{slot.item_tag}>\n{question}\n{answer}\n</{slot.item_tag}>"
+
+
+def slot_frame(slot: Slot, items: int) -> str:
+    """항목 `items` 개를 넣은 칸 글에서 항목을 뺀 나머지(칸 태그 · 항목 사이 빈 줄)를 돌려준다. 예산을 나눌 때 먼저 뺀다."""
+    separators = ITEM_SEPARATOR * max(items - 1, 0)
+    if slot.tag is None:
+        return separators
+    return f"<{slot.tag}>\n\n</{slot.tag}>{separators}"
+
+
+def _wrap(slot: Slot, blocks: Sequence[str]) -> str:
+    if not blocks:
+        return ""
     body = ITEM_SEPARATOR.join(blocks)
     if slot.tag is None:
         return body
