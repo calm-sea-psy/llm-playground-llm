@@ -21,8 +21,10 @@ USER_TAG = "user"
 """history 칸의 턴 안에서 사용자 질문을 감싸는 태그."""
 ASSISTANT_TAG = "assistant"
 """history 칸의 턴 안에서 그때의 답을 감싸는 태그."""
-# 태그 · 속성 이름. 소문자로 시작하는 영문 소문자 · 숫자 · 밑줄만 — 본문 속 흉내를 정규식 하나로 지울 수 있게
-_NAME = re.compile(r"[a-z][a-z0-9_]*")
+NAME_CHARS = "a-z0-9_"
+"""칸 · 태그 · 속성 이름에 쓰는 글자 (정규식 문자 집합의 안쪽). 흉내 지우기(`TagScrubber`)가 이름 끝을 이 집합으로 가른다."""
+# 이름은 소문자로 시작하고 NAME_CHARS 만 쓴다 — 본문 속 흉내를 정규식 하나로 지울 수 있게
+_NAME = re.compile(rf"[a-z][{NAME_CHARS}]*")
 
 
 @dataclass(frozen=True)
