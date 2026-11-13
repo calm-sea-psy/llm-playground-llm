@@ -4,37 +4,13 @@
 에이전트가 만든 글(하위 질문 · 새 검색어 · 메모)은 검색 문서 속 지시를 옮겨 담을 수 있어 data 칸 후보로만 내보낸다.
 """
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Protocol, Self
+from typing import Self
 
+from playground_llm.context.ranking import keep_best
 from playground_llm.context.slots import Candidate
-
-
-class _Scored(Protocol):
-    """점수로 견주는 항목."""
-
-    @property
-    def score(self) -> float:
-        """높을수록 좋은 점수."""
-        ...
-
-
-def keep_best[ItemT: _Scored](
-    found: Sequence[ItemT], new: Iterable[ItemT], *, key: Callable[[ItemT], str]
-) -> tuple[ItemT, ...]:
-    """Found 뒤에 new 를 붙인 목록 — key 마다 하나, 더 높은 점수를 남기고 자리는 처음 나온 자리. 점수가 같으면 먼저 나온 것."""
-    merged = list(found)
-    index = {key(item): i for i, item in enumerate(merged)}
-    for item in new:
-        seen = index.get(key(item))
-        if seen is None:
-            index[key(item)] = len(merged)
-            merged.append(item)
-        elif item.score > merged[seen].score:
-            merged[seen] = item
-    return tuple(merged)
 
 
 @dataclass(frozen=True)

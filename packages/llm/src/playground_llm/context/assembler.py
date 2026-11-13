@@ -16,6 +16,7 @@ from playground_llm.context.packing import (
     render_turn,
     slot_frame,
 )
+from playground_llm.context.ranking import merge_best
 from playground_llm.context.slots import Candidate, ContextLayout, Slot, Turn
 from playground_llm.context.tokens import TokenCounter
 from playground_llm.errors import LLMError
@@ -261,24 +262,9 @@ class ContextAssembler:
 
 
 def _dedupe(candidates: Sequence[Candidate]) -> tuple[list[Candidate], list[Dropped]]:
-    """같은 key 는 점수가 가장 높은 하나만 — 자리는 처음 나온 자리. 점수가 같으면 먼저 나온 것."""
-    unique: list[Candidate] = []
-    index: dict[str, int] = {}
-    dropped: list[Dropped] = []
-    for candidate in candidates:
-        if candidate.key is None:
-            unique.append(candidate)
-            continue
-        seen = index.get(candidate.key)
-        if seen is None:
-            index[candidate.key] = len(unique)
-            unique.append(candidate)
-        elif candidate.score > unique[seen].score:
-            dropped.append(Dropped(unique[seen], "duplicate"))
-            unique[seen] = candidate
-        else:
-            dropped.append(Dropped(candidate, "duplicate"))
-    return unique, dropped
+    """같은 key 는 점수가 가장 높은 하나만 (`merge_best` 규칙). key 가 없는 후보는 비교하지 않는다."""
+    unique, duplicates = merge_best((), candidates, key=lambda candidate: candidate.key)
+    return unique, [Dropped(candidate, "duplicate") for candidate in duplicates]
 
 
 def _arrange(
