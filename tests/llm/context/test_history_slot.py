@@ -138,6 +138,7 @@ def test_history_needs_a_history_slot_and_only_takes_turns():
         {"required": True},  # 첫 턴에는 이력이 없다
         {"max_per_group": 1},
         {"item_tag": "user"},  # 턴 안 태그와 겹친다
+        {"order": "given"},  # 늘 대화 순서 — 다른 순서를 기대한 설정은 받지 않는다
     ],
 )
 def test_history_slot_rejects_unsafe_or_meaningless_options(options: dict):

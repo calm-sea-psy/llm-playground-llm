@@ -51,7 +51,7 @@ class Slot:
     numbered: bool = False
     """항목 태그에 `id="1"` 부터 번호를 붙인다 — 답 속 출처 번호 `[n]` 과 같은 번호."""
     order: ItemOrder = "score"
-    """data 칸 안 항목의 배치 순서. history 칸은 보지 않는다 — 늘 대화 순서."""
+    """data 칸 안 항목의 배치 순서. history 칸은 기본값만 받는다 — 늘 대화 순서로 놓는다."""
     max_per_group: int | None = None
     """같은 묶음(`Candidate.group`, 예: 문서 id)에서 넣을 최대 항목 수. None 이면 제한 없음."""
     required: bool = False
@@ -95,6 +95,10 @@ class Slot:
         if self.numbered or self.max_per_group is not None or self.required:
             raise ValueError(
                 f"{self.name}: history slots take no numbered, max_per_group or required"
+            )
+        if self.order != "score":  # 기본값이 아니면 쓰는 쪽이 다른 순서를 기대한 것이다
+            raise ValueError(
+                f"{self.name}: history slots always keep conversation order, got {self.order=}"
             )
 
     def _check_data(self) -> None:
