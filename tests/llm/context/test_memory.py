@@ -82,7 +82,9 @@ def test_agent_outputs_go_into_tagged_data_slots():
         .add_note("태종이 창덕궁을 세움 [1]")
     )
 
-    candidates = memory_candidates(memory, question="question", sub_questions="subs", notes="notes")
+    candidates = memory_candidates(
+        memory, question_slot="question", sub_questions_slot="subs", notes_slot="notes"
+    )
     candidates += [item.as_candidate("docs") for item in memory.evidence]
     context = ContextAssembler(layout, CharTokenCounter()).assemble({"system": "규칙"}, candidates)
 
@@ -100,7 +102,7 @@ def test_agent_outputs_go_into_tagged_data_slots():
 def test_memory_candidates_skip_slots_left_out():
     memory = WorkingMemory(QUESTION).add_queries(["태종"])
 
-    assert memory_candidates(memory, queries="q") == [Candidate("q", "태종", key="태종")]
+    assert memory_candidates(memory, queries_slot="q") == [Candidate("q", "태종", key="태종")]
 
 
 class _Source:

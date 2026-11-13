@@ -6,7 +6,7 @@
 문장이 그 자료로 뒷받침되는지는 이 검사가 보지 않는다 (답변 평가의 몫).
 """
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
 from playground_llm.context.assembler import Placed, SlotResult
 from playground_llm.errors import LLMError
@@ -28,8 +28,7 @@ def unknown_sources(numbers: Iterable[int], result: SlotResult) -> list[int]:
       numbers: 모델이 출처로 고른 번호 (예: 구조화 출력의 source_ids).
       result: 이번 호출의 번호 칸 결과 (`context.slot("documents")`). 번호 칸(`Slot.numbered`)이어야 한다.
     """
-    by_number = _numbered(result)
-    return [number for number in numbers if number not in by_number]
+    return _unknown(numbers, _numbered(result))
 
 
 def cited_sources(numbers: Sequence[int], result: SlotResult) -> tuple[Placed, ...]:
@@ -43,9 +42,13 @@ def cited_sources(numbers: Sequence[int], result: SlotResult) -> tuple[Placed, .
       UnknownSourceError: 칸에 없는 번호가 하나라도 있을 때. 일부만 맞아도 통과시키지 않는다.
     """
     by_number = _numbered(result)
-    if unknown := [number for number in numbers if number not in by_number]:
+    if unknown := _unknown(numbers, by_number):
         raise UnknownSourceError(unknown)
     return tuple(by_number[number] for number in dict.fromkeys(numbers))
+
+
+def _unknown(numbers: Iterable[int], by_number: Mapping[int, Placed]) -> list[int]:
+    return [number for number in numbers if number not in by_number]
 
 
 def _numbered(result: SlotResult) -> dict[int, Placed]:

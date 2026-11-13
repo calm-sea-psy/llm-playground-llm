@@ -17,18 +17,14 @@ from playground_llm.context.assembler import (
     SlotResult,
 )
 from playground_llm.context.citations import UnknownSourceError, cited_sources, unknown_sources
-from playground_llm.context.history import (
+from playground_llm.context.followup import (
     QUERY_SEPARATOR,
     clarification_questions,
     search_query,
 )
-from playground_llm.context.memory import (
-    Evidence,
-    WorkingMemory,
-    keep_best,
-    memory_candidates,
-)
+from playground_llm.context.memory import Evidence, WorkingMemory, memory_candidates
 from playground_llm.context.packing import ITEM_SEPARATOR, TagScrubber
+from playground_llm.context.ranking import keep_best
 from playground_llm.context.slots import (
     ASSISTANT_TAG,
     ITEM_ORDERS,

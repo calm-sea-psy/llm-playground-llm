@@ -9,6 +9,7 @@ from collections.abc import Iterable, Sequence
 
 from playground_llm.context.slots import (
     ASSISTANT_TAG,
+    NAME_CHARS,
     NUMBER_ATTRIBUTE,
     USER_TAG,
     Candidate,
@@ -35,7 +36,7 @@ class TagScrubber:
         alternatives = "|".join(re.escape(name) for name in names)
         self._pattern = (
             re.compile(
-                rf"<\s*/?\s*(?:{alternatives})(?![a-z0-9_])(?:[^<>\n]*>|\s*>)?", re.IGNORECASE
+                rf"<\s*/?\s*(?:{alternatives})(?![{NAME_CHARS}])(?:[^<>\n]*>|\s*>)?", re.IGNORECASE
             )
             if names
             else None

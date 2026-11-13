@@ -21,8 +21,10 @@ USER_TAG = "user"
 """history 칸의 턴 안에서 사용자 질문을 감싸는 태그."""
 ASSISTANT_TAG = "assistant"
 """history 칸의 턴 안에서 그때의 답을 감싸는 태그."""
-# 태그 · 속성 이름. 소문자로 시작하는 영문 소문자 · 숫자 · 밑줄만 — 본문 속 흉내를 정규식 하나로 지울 수 있게
-_NAME = re.compile(r"[a-z][a-z0-9_]*")
+NAME_CHARS = "a-z0-9_"
+"""칸 · 태그 · 속성 이름에 쓰는 글자 (정규식 문자 집합의 안쪽). 흉내 지우기(`TagScrubber`)가 이름 끝을 이 집합으로 가른다."""
+# 이름은 소문자로 시작하고 NAME_CHARS 만 쓴다 — 본문 속 흉내를 정규식 하나로 지울 수 있게
+_NAME = re.compile(rf"[a-z][{NAME_CHARS}]*")
 
 
 @dataclass(frozen=True)
@@ -49,7 +51,7 @@ class Slot:
     numbered: bool = False
     """항목 태그에 `id="1"` 부터 번호를 붙인다 — 답 속 출처 번호 `[n]` 과 같은 번호."""
     order: ItemOrder = "score"
-    """data 칸 안 항목의 배치 순서. history 칸은 보지 않는다 — 늘 대화 순서."""
+    """data 칸 안 항목의 배치 순서. history 칸은 기본값만 받는다 — 늘 대화 순서로 놓는다."""
     max_per_group: int | None = None
     """같은 묶음(`Candidate.group`, 예: 문서 id)에서 넣을 최대 항목 수. None 이면 제한 없음."""
     required: bool = False
@@ -93,6 +95,10 @@ class Slot:
         if self.numbered or self.max_per_group is not None or self.required:
             raise ValueError(
                 f"{self.name}: history slots take no numbered, max_per_group or required"
+            )
+        if self.order != "score":  # 기본값이 아니면 쓰는 쪽이 다른 순서를 기대한 것이다
+            raise ValueError(
+                f"{self.name}: history slots always keep conversation order, got {self.order=}"
             )
 
     def _check_data(self) -> None:

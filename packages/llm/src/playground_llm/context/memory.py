@@ -4,37 +4,13 @@
 에이전트가 만든 글(하위 질문 · 새 검색어 · 메모)은 검색 문서 속 지시를 옮겨 담을 수 있어 data 칸 후보로만 내보낸다.
 """
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Protocol, Self
+from typing import Self
 
+from playground_llm.context.ranking import keep_best
 from playground_llm.context.slots import Candidate
-
-
-class _Scored(Protocol):
-    """점수로 견주는 항목."""
-
-    @property
-    def score(self) -> float:
-        """높을수록 좋은 점수."""
-        ...
-
-
-def keep_best[ItemT: _Scored](
-    found: Sequence[ItemT], new: Iterable[ItemT], *, key: Callable[[ItemT], str]
-) -> tuple[ItemT, ...]:
-    """Found 뒤에 new 를 붙인 목록 — key 마다 하나, 더 높은 점수를 남기고 자리는 처음 나온 자리. 점수가 같으면 먼저 나온 것."""
-    merged = list(found)
-    index = {key(item): i for i, item in enumerate(merged)}
-    for item in new:
-        seen = index.get(key(item))
-        if seen is None:
-            index[key(item)] = len(merged)
-            merged.append(item)
-        elif item.score > merged[seen].score:
-            merged[seen] = item
-    return tuple(merged)
 
 
 @dataclass(frozen=True)
@@ -132,30 +108,30 @@ class WorkingMemory:
 def memory_candidates(
     memory: WorkingMemory,
     *,
-    question: str | None = None,
-    sub_questions: str | None = None,
-    queries: str | None = None,
-    notes: str | None = None,
+    question_slot: str | None = None,
+    sub_questions_slot: str | None = None,
+    queries_slot: str | None = None,
+    notes_slot: str | None = None,
 ) -> list[Candidate]:
     """작업 기억을 data 칸 후보로 바꾼 것을 돌려준다. 칸 이름이 None 인 항목은 넣지 않는다.
 
     Args:
       memory: 바꿀 작업 기억.
-      question: 질문 원문을 넣을 칸.
-      sub_questions: 하위 질문을 넣을 칸.
-      queries: 쓴 검색어를 넣을 칸.
-      notes: 사실 메모를 넣을 칸.
+      question_slot: 질문 원문을 넣을 칸 이름.
+      sub_questions_slot: 하위 질문을 넣을 칸 이름.
+      queries_slot: 쓴 검색어를 넣을 칸 이름.
+      notes_slot: 사실 메모를 넣을 칸 이름.
 
     Returns:
       칸마다 기억에 쌓인 순서대로. 점수는 0 — 예산이 모자라면 뒤에서부터 빠진다. 근거는 `Evidence.as_candidate` 로 따로 넣는다.
     """
     candidates: list[Candidate] = []
-    if question is not None:
-        candidates.append(Candidate(slot=question, text=memory.question))
-    texts = ((sub_questions, memory.sub_questions), (queries, memory.queries))
+    if question_slot is not None:
+        candidates.append(Candidate(slot=question_slot, text=memory.question))
+    texts = ((sub_questions_slot, memory.sub_questions), (queries_slot, memory.queries))
     for slot, values in texts:
         if slot is not None:
             candidates.extend(Candidate(slot=slot, text=text, key=text) for text in values)
-    if notes is not None:
-        candidates.extend(Candidate(slot=notes, text=note) for note in memory.notes)
+    if notes_slot is not None:
+        candidates.extend(Candidate(slot=notes_slot, text=note) for note in memory.notes)
     return candidates
