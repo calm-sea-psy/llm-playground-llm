@@ -17,7 +17,7 @@ from playground_llm.context.assembler import (
     SlotResult,
 )
 from playground_llm.context.citations import UnknownSourceError, cited_sources, unknown_sources
-from playground_llm.context.history import (
+from playground_llm.context.followup import (
     QUERY_SEPARATOR,
     clarification_questions,
     search_query,
