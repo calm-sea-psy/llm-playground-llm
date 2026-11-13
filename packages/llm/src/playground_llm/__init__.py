@@ -2,6 +2,8 @@
 
 extras 모듈은 따로 가져온다: `from playground_llm.ollama import OllamaLLM` (`[ollama]`),
 `from playground_llm.structured import generate_json` (`[json]`).
+컨텍스트 엔진(칸 · 예산 · 포장 · 이력 · 출처 범위 검사)은 `from playground_llm.context import ContextAssembler`
+처럼 하위 패키지에서 가져온다 (extras 없음).
 """
 
 from playground_llm.errors import (

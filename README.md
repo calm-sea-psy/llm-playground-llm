@@ -1,6 +1,6 @@
 # llm-playground-llm
 
-llm-playground 프로젝트들이 함께 쓰는 LLM · 평가 모듈의 uv workspace입니다. 메시지와 모델 설정(`ModelSpec`)을 받아 Ollama로 답을 만드는 `playground_llm`과, 검색 · 답변 결과를 지표 · 통계 · 리포트로 바꾸는 `playground_evalkit` 두 패키지를 둡니다. 두 패키지는 서로 의존하지 않고 제품 레포도 import하지 않으며, 벤치(`bench/f4_bench.py`)는 llm-playground-wiki가 만든 문항 세트를 파일로만 받습니다.
+llm-playground 프로젝트들이 함께 쓰는 LLM · 평가 모듈의 uv workspace입니다. LLM에 넘길 입력을 칸별 예산 안에서 조립하고(컨텍스트 엔진) 메시지와 모델 설정(`ModelSpec`)을 받아 Ollama로 답을 만드는 `playground_llm`과, 검색 · 답변 결과를 지표 · 통계 · 리포트로 바꾸는 `playground_evalkit` 두 패키지를 둡니다. 두 패키지는 서로 의존하지 않고 제품 레포도 import하지 않으며, 벤치(`bench/f4_bench.py`)는 llm-playground-wiki가 만든 문항 세트를 파일로만 받습니다.
 
 ## 전체 흐름
 
@@ -9,22 +9,27 @@ llm-playground 프로젝트들이 함께 쓰는 LLM · 평가 모듈의 uv works
 
 flowchart TD
     IN(["프롬프트 파일 · 이름/버전.md"]):::io
+    IN2(["검색 결과 · 이전 대화"]):::io
 
-    subgraph S1["① 프롬프트 · llm/"]
+    subgraph S1["① 프롬프트 · 컨텍스트 · llm/"]
         A1["PromptLibrary<br/>이름@버전으로 꺼내기"]:::s1
         A2["compose<br/>조각 잇기 · 내용 해시"]:::s1
-        R1["Prompt"]:::out
+        A3["ContextAssembler<br/>칸 · 예산 · 태그 포장"]:::s1
+        R1["AssembledContext<br/>messages"]:::out
         A1 --> A2
-        A2 --> R1
+        A2 -->|지시 칸| A3
+        A3 --> R1
     end
 
     subgraph S2["② 생성 · llm/"]
         B1["LLM Protocol<br/>OllamaLLM · FakeLLM"]:::s2
         B2["generate_json<br/>pydantic 검증 · 재시도"]:::s2
+        B3["cited_sources<br/>출처 번호 ⊆ 이번 문맥"]:::s2
         R2["Generation"]:::out
         B1 --> R2
         B1 -.->|구조화 출력일 때| B2
         B2 -.-> R2
+        B2 -.->|출처 번호| B3
     end
 
     subgraph S3["③ 평가 · evalkit/"]
@@ -38,6 +43,7 @@ flowchart TD
     OUT(["reports/ 리포트"]):::io
 
     IN --> A1
+    IN2 --> A3
     R1 --> B1
     R2 --> C1
     C2 --> OUT
@@ -57,7 +63,7 @@ flowchart TD
 ```
 llm-playground-llm/
 ├─ packages/
-│  ├─ llm/            playground_llm — 계약(protocols) · 타입(types) · 예외(errors) · FakeLLM(fake) · OllamaLLM(ollama) · generate_json(structured) · 프롬프트(prompts)
+│  ├─ llm/            playground_llm — 계약(protocols) · 타입(types) · 예외(errors) · FakeLLM(fake) · OllamaLLM(ollama) · generate_json(structured) · 프롬프트(prompts) · 컨텍스트 엔진(context/)
 │  └─ evalkit/        playground_evalkit — 지표(metrics · answers) · 통계(stats) · KorQuAD(korquad) · 정규화(normalize) · 기록(records) · 리포트(report). 의존 없음
 ├─ bench/
 │  ├─ f4_bench.py     F4 LLM 벤치 — 검색 결과를 고정하고 LLM만 바꿔 근거 답변을 잼
@@ -79,6 +85,7 @@ llm-playground-llm/
 | LLM 서버 | Ollama 네이티브 `/api/chat` (OpenAI 호환 `/v1`이 아니라 `think` · `options.num_ctx`를 넘길 수 있는 네이티브 API) |
 | LLM 클라이언트 | httpx (`[ollama]` extras) |
 | 구조화 출력 | pydantic (`[json]` extras) |
+| 컨텍스트 엔진 | 표준 라이브러리만 (`playground_llm.context`, extras 없음) |
 | 평가 | 표준 라이브러리만 (`playground_evalkit`은 의존 없음) |
 
 ## 빠르게 실행해 보기
@@ -187,6 +194,77 @@ print(result.value.answer, result.attempts)  # 한양 1
 | `ModelNotFoundError` · `GenerationTimeoutError` · `GenerationError` · `StructuredOutputError` · `PromptError` | 예외. 모두 `LLMError` 하위 | `GenerationTimeoutError` · `StructuredOutputError`는 `GenerationError` 하위 |
 
 `OllamaLLM`은 `think`를 항상 명시해서 보냅니다. gemma4처럼 thinking을 지원하는 모델은 `think`를 빼면 켜진 채로 돌기 때문에, spec에 없으면 `false`를 보냅니다. 모델이 받지 않는 값(`THINK_RULES`)은 서버에 보내기 전에 `ValueError`로 거부합니다.
+
+#### 컨텍스트 엔진 (`playground_llm.context`)
+
+LLM을 한 번 부를 때 넘길 입력을 칸(slot)별 예산 안에서 골라 대화(`messages`)로 만듭니다. 칸 종류는 셋입니다: `instruction`은 우리가 쓴 지시(태그 없이 그대로), `data`는 검색 문서 · 도구 결과 · 에이전트 산출물(user 턴의 태그 안에만, 본문 속 태그 흉내는 지움), `history`는 같은 대화의 앞선 질문 · 답(턴마다 같은 몫, 넘는 답은 `…`로 자름)입니다. 근거 문서는 요약하지 않고 고르며, 어떤 칸을 둘지(이름 · 예산 · 태그)는 제품 레포가 정합니다.
+
+```python
+from playground_llm.context import (
+    Candidate,
+    CharTokenCounter,
+    ContextAssembler,
+    ContextLayout,
+    Slot,
+    Turn,
+    cited_sources,
+)
+
+layout = ContextLayout(
+    (
+        Slot("system", "instruction", budget=500, role="system"),
+        Slot("history", "history", budget=300, priority=2, tag="history", item_tag="turn"),
+        Slot("docs", "data", budget=800, priority=1, item_tag="document", numbered=True),
+        Slot("question", "data", budget=100, tag="question", required=True),
+    ),
+    budget=1500,
+)
+context = ContextAssembler(layout, CharTokenCounter()).assemble(
+    {"system": "문서에 있는 내용만 [n] 번호를 달아 답한다."},
+    [
+        Candidate("docs", "창덕궁은 1405년에 지었다.", score=0.9, attributes={"title": "창덕궁"}),
+        Candidate("question", "그럼 창덕궁은?"),
+    ],
+    history=[Turn("경복궁은 언제 지었나?", "1395년입니다.")],
+)
+
+print(context.messages[1].content)  # user 턴 — 아래 출력
+print(cited_sources([1], context.slot("docs"))[0].candidate.attributes)  # {'title': '창덕궁'}
+```
+
+```text
+<history>
+<turn>
+<user>경복궁은 언제 지었나?</user>
+<assistant>1395년입니다.</assistant>
+</turn>
+</history>
+
+<document id="1" title="창덕궁">
+창덕궁은 1405년에 지었다.
+</document>
+
+<question>
+그럼 창덕궁은?
+</question>
+```
+
+칸은 배치 순서대로 놓이고 예산은 우선순위(`priority`가 작은 칸부터) 순서로 받습니다. history 칸은 문서 칸보다 우선순위 숫자를 크게 둬 이력이 근거를 밀어내지 않게 합니다. 이전 답은 근거가 아니라서 출처 번호를 받지 않고, 모델이 고른 출처 번호는 `cited_sources`가 이번 호출의 번호 칸과 맞춰 봅니다.
+
+| 함수 · 클래스 | 역할 | 비고 |
+| --- | --- | --- |
+| `Slot(name, kind, budget, …)` | 칸 하나: 종류 · 토큰 상한 · 우선순위 · 턴 · 태그 | `numbered=True`면 항목 태그에 `id="n"` — 답 속 `[n]`과 같은 번호 |
+| `ContextLayout(slots, budget, reserved_tags)` | 칸 배치 · 전체 상한 | 앞은 거의 안 바뀌는 칸, 뒤는 매번 바뀌는 칸. history 칸은 하나까지 |
+| `ContextAssembler(layout, counter).assemble(instructions, candidates, history=…)` | 칸별로 골라 포장한 `AssembledContext` | data 칸은 중복 key · 묶음 상한 · 점수순, 안 들어가는 항목은 건너뜀. 지시 · 필수 칸이 안 들어가면 `BudgetError` |
+| `Candidate(slot, text, score, key, group, attributes)` | data 칸 후보 하나 | 지시 칸 · history 칸에는 넣을 수 없음 |
+| `Turn(question, answer, clarification)` | 앞선 턴 하나 (질문 · 최종 답) | 출처 · 문서는 넣지 않음. 모델이 본 그대로(자른 답 포함)는 `slot(…).turns` |
+| `clarification_questions(turns)` · `search_query(question, prior, max_chars=…)` | 되묻기 뒤 검색어 보강 | 직전에 연달아 되물은 질문을 이번 질문 앞에 붙임. 넘치면 오래된 질문부터 뺌 |
+| `cited_sources(numbers, slot_result)` · `unknown_sources(…)` | 출처 번호 ⊆ 이번 문맥 번호 검사 | 없는 번호가 있으면 `UnknownSourceError`. 출처 정보는 `Placed.candidate`에서 꺼냄 |
+| `WorkingMemory` · `Evidence` · `memory_candidates` | 질문 하나의 작업 기억 (불변) | 에이전트가 쓴 글은 data 칸 후보로만 |
+| `CandidateSource` · `collect_candidates` | 후보 출처 계약 · 동시 수집 | 장기 메모리 조회도 같은 계약 |
+| `TokenCounter` · `CharTokenCounter` | 토큰 세기 계약 · 한국어 글자 수 어림 | 300자 ≈ 200토큰. 실제 값은 `Usage.prompt_tokens`로 확인 |
+| `TagScrubber(tags)` | 태그 흉내 지우기 | 조립기가 레이아웃의 모든 태그로 만들어 씀 |
+| `BudgetError` · `UnknownSourceError` | 예외 | `LLMError` · `ValueError` 하위 |
 
 ### playground_evalkit
 
